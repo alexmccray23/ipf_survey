@@ -21,7 +21,7 @@ pub struct CodedSurvey {
 
 impl CodedSurvey {
     /// Create a builder for constructing a survey record-by-record.
-    #[must_use] 
+    #[must_use]
     pub const fn builder(variables: Vec<Variable>) -> SurveyBuilder {
         SurveyBuilder {
             variables,
@@ -72,13 +72,14 @@ impl CodedSurvey {
         // Validate labels
         for (v, var) in variables.iter().enumerate() {
             if let Some(ref labels) = var.labels
-                && labels.len() != var.levels {
-                    return Err(RakingError::LabelMismatch {
-                        variable: v,
-                        levels: var.levels,
-                        labels: labels.len(),
-                    });
-                }
+                && labels.len() != var.levels
+            {
+                return Err(RakingError::LabelMismatch {
+                    variable: v,
+                    levels: var.levels,
+                    labels: labels.len(),
+                });
+            }
         }
 
         // Validate all codes
@@ -106,7 +107,10 @@ impl CodedSurvey {
             }
             for (r, &w) in bw.iter().enumerate() {
                 if w < 0.0 {
-                    return Err(RakingError::NegativeBaseWeight { record: r, weight: w });
+                    return Err(RakingError::NegativeBaseWeight {
+                        record: r,
+                        weight: w,
+                    });
                 }
             }
         }
@@ -119,22 +123,22 @@ impl CodedSurvey {
         })
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn n_records(&self) -> usize {
         self.n_records
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn n_variables(&self) -> usize {
         self.variables.len()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn variables(&self) -> &[Variable] {
         &self.variables
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn record_codes(&self, record_index: usize) -> &[usize] {
         let k = self.variables.len();
         &self.codes[record_index * k..(record_index + 1) * k]
@@ -147,12 +151,12 @@ impl CodedSurvey {
             .map_or(1.0, |bw| bw[record_index])
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn flat_codes(&self) -> &[usize] {
         &self.codes
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn base_weights(&self) -> Option<&[f64]> {
         self.base_weights.as_deref()
     }
@@ -253,13 +257,14 @@ impl SurveyBuilder {
         // Validate labels
         for (v, var) in self.variables.iter().enumerate() {
             if let Some(ref labels) = var.labels
-                && labels.len() != var.levels {
-                    return Err(RakingError::LabelMismatch {
-                        variable: v,
-                        levels: var.levels,
-                        labels: labels.len(),
-                    });
-                }
+                && labels.len() != var.levels
+            {
+                return Err(RakingError::LabelMismatch {
+                    variable: v,
+                    levels: var.levels,
+                    labels: labels.len(),
+                });
+            }
         }
 
         Ok(CodedSurvey {
@@ -415,10 +420,7 @@ mod tests {
     #[test]
     fn from_flat_codes_wrong_length() {
         let result = CodedSurvey::from_flat_codes(test_variables(), vec![0, 0, 1], 2);
-        assert!(matches!(
-            result,
-            Err(RakingError::BaseWeightLength { .. })
-        ));
+        assert!(matches!(result, Err(RakingError::BaseWeightLength { .. })));
     }
 
     #[test]

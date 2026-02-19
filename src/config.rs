@@ -49,9 +49,10 @@ impl RakingConfig {
     /// Validate the configuration, returning an error if bounds are invalid.
     pub fn validate(&self) -> Result<(), RakingError> {
         if let Some((lower, upper)) = self.weight_bounds
-            && (lower < 0.0 || lower > upper) {
-                return Err(RakingError::InvalidBounds { lower, upper });
-            }
+            && (lower < 0.0 || lower > upper)
+        {
+            return Err(RakingError::InvalidBounds { lower, upper });
+        }
         Ok(())
     }
 }

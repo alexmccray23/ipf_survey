@@ -78,13 +78,18 @@ pub fn fit_marginals(
         {
             let data = matrix.flat_data_mut().unwrap();
             for entry in entries {
-                let marginal =
-                    compute_1d_marginal(data, &shape, &strides, entry.variable_index);
+                let marginal = compute_1d_marginal(data, &shape, &strides, entry.variable_index);
                 let factors: Vec<f64> = entry
                     .targets
                     .iter()
                     .zip(marginal.iter())
-                    .map(|(&t, &m)| if m.abs() > f64::EPSILON * 1e3 { t / m } else { 1.0 })
+                    .map(|(&t, &m)| {
+                        if m.abs() > f64::EPSILON * 1e3 {
+                            t / m
+                        } else {
+                            1.0
+                        }
+                    })
                     .collect();
                 scale_variable(data, &shape, &strides, entry.variable_index, &factors);
             }
@@ -224,9 +229,7 @@ pub fn trim_rerake(
         fit_marginals(fitted, entries, config, diagnostics)?;
     }
 
-    Err(RakingError::TrimNotConverged {
-        cycles: max_cycles,
-    })
+    Err(RakingError::TrimNotConverged { cycles: max_cycles })
 }
 
 // ---------------------------------------------------------------------------
@@ -277,8 +280,7 @@ mod tests {
     #[test]
     fn assign_weights_no_bounds() {
         let survey = simple_survey();
-        let factors =
-            DenseMatrix::from_shape_vec(vec![2, 2], vec![2.0, 2.0, 2.0, 2.0]).unwrap();
+        let factors = DenseMatrix::from_shape_vec(vec![2, 2], vec![2.0, 2.0, 2.0, 2.0]).unwrap();
         let (weights, trimmed) = assign_weights(&survey, &factors, None);
 
         assert_eq!(weights, vec![2.0, 2.0, 2.0, 2.0]);
@@ -289,8 +291,7 @@ mod tests {
     fn assign_weights_with_bounds() {
         let survey = simple_survey();
         // factors: [0.1, 5.0, 1.0, 1.0] — first too low, second too high
-        let factors =
-            DenseMatrix::from_shape_vec(vec![2, 2], vec![0.1, 5.0, 1.0, 1.0]).unwrap();
+        let factors = DenseMatrix::from_shape_vec(vec![2, 2], vec![0.1, 5.0, 1.0, 1.0]).unwrap();
         let (weights, trimmed) = assign_weights(&survey, &factors, Some((0.5, 3.0)));
 
         assert_eq!(weights[0], 0.5); // clamped from 0.1 to 0.5
@@ -335,8 +336,7 @@ mod tests {
     #[test]
     fn fit_marginals_2d() {
         // 2x2 uniform seed → fit to [3,3] x [3,3] (same grand total of 6)
-        let mut matrix =
-            DenseMatrix::from_shape_vec(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]).unwrap();
+        let mut matrix = DenseMatrix::from_shape_vec(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]).unwrap();
         let entries = vec![
             TargetEntry {
                 variable_index: 0,
@@ -347,8 +347,8 @@ mod tests {
                 targets: vec![3.0, 3.0],
             },
         ];
-        let report = fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false)
-            .unwrap();
+        let report =
+            fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false).unwrap();
         assert!(report.converged);
 
         // All cells should be 1.5 (6 total / 4 cells)
@@ -361,14 +361,13 @@ mod tests {
     #[test]
     fn fit_marginals_1d() {
         // 1D: 3 cells, fit to targets [4, 2, 4]
-        let mut matrix =
-            DenseMatrix::from_shape_vec(vec![3], vec![2.0, 2.0, 1.0]).unwrap();
+        let mut matrix = DenseMatrix::from_shape_vec(vec![3], vec![2.0, 2.0, 1.0]).unwrap();
         let entries = vec![TargetEntry {
             variable_index: 0,
             targets: vec![4.0, 2.0, 4.0],
         }];
-        let report = fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false)
-            .unwrap();
+        let report =
+            fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false).unwrap();
         assert!(report.converged);
 
         let data = matrix.flat_data().unwrap();
@@ -380,8 +379,7 @@ mod tests {
     #[test]
     fn fit_marginals_3d() {
         // 2x2x2 uniform seed, uniform targets → stays uniform
-        let mut matrix =
-            DenseMatrix::from_shape_vec(vec![2, 2, 2], vec![1.0; 8]).unwrap();
+        let mut matrix = DenseMatrix::from_shape_vec(vec![2, 2, 2], vec![1.0; 8]).unwrap();
         let entries = vec![
             TargetEntry {
                 variable_index: 0,
@@ -396,8 +394,8 @@ mod tests {
                 targets: vec![4.0, 4.0],
             },
         ];
-        let report = fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false)
-            .unwrap();
+        let report =
+            fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false).unwrap();
         assert!(report.converged);
 
         let data = matrix.flat_data().unwrap();
@@ -426,17 +424,23 @@ mod tests {
         fit_marginals(&mut fitted, &entries, &config, false).unwrap();
 
         // With wide bounds, no trimming needed
-        let report =
-            trim_rerake(&seed, &mut fitted, (0.1, 100.0), &entries, &config, false, 50)
-                .unwrap();
+        let report = trim_rerake(
+            &seed,
+            &mut fitted,
+            (0.1, 100.0),
+            &entries,
+            &config,
+            false,
+            50,
+        )
+        .unwrap();
         assert_eq!(report.cycles, 0);
     }
 
     #[test]
     fn trim_not_converged() {
         let seed = DenseMatrix::from_shape_vec(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]).unwrap();
-        let mut fitted =
-            DenseMatrix::from_shape_vec(vec![2, 2], vec![0.1, 5.0, 5.0, 0.1]).unwrap();
+        let mut fitted = DenseMatrix::from_shape_vec(vec![2, 2], vec![0.1, 5.0, 5.0, 0.1]).unwrap();
 
         let entries = vec![
             TargetEntry {
@@ -450,7 +454,15 @@ mod tests {
         ];
 
         let config = ConvergenceConfig::default();
-        let result = trim_rerake(&seed, &mut fitted, (0.99, 1.01), &entries, &config, false, 0);
+        let result = trim_rerake(
+            &seed,
+            &mut fitted,
+            (0.99, 1.01),
+            &entries,
+            &config,
+            false,
+            0,
+        );
         assert!(matches!(
             result,
             Err(RakingError::TrimNotConverged { cycles: 0 })

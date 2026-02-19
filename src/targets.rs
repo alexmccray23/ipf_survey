@@ -1,5 +1,5 @@
-use crate::survey::CodedSurvey;
 use crate::RakingError;
+use crate::survey::CodedSurvey;
 
 /// A single marginal-target entry: which variable and what target values.
 #[derive(Debug, Clone)]
@@ -15,7 +15,7 @@ pub struct PopulationTargets {
 }
 
 impl PopulationTargets {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -23,7 +23,7 @@ impl PopulationTargets {
     }
 
     /// Add marginal targets for a variable (infallible builder method).
-    #[must_use] 
+    #[must_use]
     pub fn add(mut self, variable_index: usize, targets: Vec<f64>) -> Self {
         self.entries.push(TargetEntry {
             variable_index,
@@ -119,17 +119,17 @@ pub struct ValidatedTargets {
 }
 
 impl ValidatedTargets {
-    #[must_use] 
+    #[must_use]
     pub const fn grand_total(&self) -> f64 {
         self.grand_total
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn entries(&self) -> &[TargetEntry] {
         &self.entries
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn n_constraints(&self) -> usize {
         self.entries.len()
     }

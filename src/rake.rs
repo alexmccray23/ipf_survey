@@ -31,8 +31,12 @@ pub fn rake(
 
     // 3–4. Run IPF with 1-D marginal constraints
     let entries = targets.entries();
-    let mut convergence =
-        fit_marginals(&mut fitted, entries, &config.convergence, config.diagnostics)?;
+    let mut convergence = fit_marginals(
+        &mut fitted,
+        entries,
+        &config.convergence,
+        config.diagnostics,
+    )?;
 
     // 5. Trim-rerake if bounds specified
     let trim_report;
@@ -50,8 +54,12 @@ pub fn rake(
 
         // Get convergence from the final state (after trim settled)
         let mut final_fitted = fitted.clone();
-        convergence =
-            fit_marginals(&mut final_fitted, entries, &config.convergence, config.diagnostics)?;
+        convergence = fit_marginals(
+            &mut final_fitted,
+            entries,
+            &config.convergence,
+            config.diagnostics,
+        )?;
     } else {
         trim_report = TrimReport { cycles: 0 };
     }
@@ -267,8 +275,7 @@ mod tests {
             },
         ];
         // 4 records, one per cell
-        let survey =
-            CodedSurvey::from_flat_codes(vars, vec![0, 0, 0, 1, 1, 0, 1, 1], 4).unwrap();
+        let survey = CodedSurvey::from_flat_codes(vars, vec![0, 0, 0, 1, 1, 0, 1, 1], 4).unwrap();
         let targets = PopulationTargets::new()
             .add(0, vec![2.0, 2.0])
             .add(1, vec![2.0, 2.0])
@@ -277,10 +284,7 @@ mod tests {
 
         let result = rake_simple(&survey, &targets).unwrap();
         for (i, &w) in result.weights.iter().enumerate() {
-            assert!(
-                (w - 1.0).abs() < 1e-6,
-                "weight[{i}] = {w}, expected ~1.0"
-            );
+            assert!((w - 1.0).abs() < 1e-6, "weight[{i}] = {w}, expected ~1.0");
         }
     }
 
@@ -346,10 +350,7 @@ mod tests {
 
         // Uniform targets on uniform seed → all weights ≈ 1.0
         for (i, &w) in result.weights.iter().enumerate() {
-            assert!(
-                (w - 1.0).abs() < 1e-6,
-                "weight[{i}] = {w}, expected ~1.0"
-            );
+            assert!((w - 1.0).abs() < 1e-6, "weight[{i}] = {w}, expected ~1.0");
         }
 
         let sum: f64 = result.weights.iter().sum();
@@ -373,9 +374,6 @@ mod tests {
         };
         let result = rake(&survey, &targets, &config).unwrap();
         let sum: f64 = result.weights.iter().sum();
-        assert!(
-            (sum - 60.0).abs() < 1e-6,
-            "sum = {sum}, expected 60.0"
-        );
+        assert!((sum - 60.0).abs() < 1e-6, "sum = {sum}, expected 60.0");
     }
 }
