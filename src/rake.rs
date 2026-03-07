@@ -126,8 +126,8 @@ mod tests {
         let survey = builder.build().unwrap();
 
         let targets = PopulationTargets::new()
-            .add(0, vec![2.0, 2.0, 2.0]) // age: equal
-            .add(1, vec![3.0, 3.0]) // gender: equal
+            .add("age_group", vec![2.0, 2.0, 2.0]) // age: equal
+            .add("gender", vec![3.0, 3.0]) // gender: equal
             .validate(&survey)
             .unwrap();
 
@@ -277,8 +277,8 @@ mod tests {
         // 4 records, one per cell
         let survey = CodedSurvey::from_flat_codes(vars, vec![0, 0, 0, 1, 1, 0, 1, 1], 4).unwrap();
         let targets = PopulationTargets::new()
-            .add(0, vec![2.0, 2.0])
-            .add(1, vec![2.0, 2.0])
+            .add("a", vec![2.0, 2.0])
+            .add("b", vec![2.0, 2.0])
             .validate(&survey)
             .unwrap();
 
@@ -298,7 +298,7 @@ mod tests {
         // 5 records: 2 in cat 0, 2 in cat 1, 1 in cat 2
         let survey = CodedSurvey::from_flat_codes(vars, vec![0, 0, 1, 1, 2], 5).unwrap();
         let targets = PopulationTargets::new()
-            .add(0, vec![4.0, 2.0, 4.0]) // want 4, 2, 4
+            .add("x", vec![4.0, 2.0, 4.0]) // want 4, 2, 4
             .validate(&survey)
             .unwrap();
 
@@ -340,9 +340,9 @@ mod tests {
         let survey = CodedSurvey::from_flat_codes(vars, codes, 8).unwrap();
 
         let targets = PopulationTargets::new()
-            .add(0, vec![4.0, 4.0])
-            .add(1, vec![4.0, 4.0])
-            .add(2, vec![4.0, 4.0])
+            .add("a", vec![4.0, 4.0])
+            .add("b", vec![4.0, 4.0])
+            .add("c", vec![4.0, 4.0])
             .validate(&survey)
             .unwrap();
 

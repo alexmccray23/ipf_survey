@@ -31,18 +31,18 @@ pub enum RakingError {
     EmptySurvey,
 
     // -- Target errors --
-    /// Variable index out of range.
-    VariableIndexOutOfRange { index: usize, n_variables: usize },
+    /// Variable name not found in survey.
+    VariableNotFound { name: String },
 
     /// Target vector length doesn't match variable levels.
     TargetLengthMismatch {
-        variable: usize,
+        name: String,
         expected: usize,
         got: usize,
     },
 
     /// Same variable targeted twice.
-    DuplicateVariable { variable: usize },
+    DuplicateVariable { name: String },
 
     /// Grand totals across variables are inconsistent.
     InconsistentTotals {
@@ -96,20 +96,19 @@ impl fmt::Display for RakingError {
                 write!(f, "record {record}: negative base weight {weight}")
             }
             Self::EmptySurvey => write!(f, "survey has no records"),
-            Self::VariableIndexOutOfRange { index, n_variables } => write!(
-                f,
-                "variable index {index} out of range (survey has {n_variables} variables)"
-            ),
+            Self::VariableNotFound { name } => {
+                write!(f, "variable \"{name}\" not found in survey")
+            }
             Self::TargetLengthMismatch {
-                variable,
+                name,
                 expected,
                 got,
             } => write!(
                 f,
-                "variable {variable}: expected {expected} targets, got {got}"
+                "variable \"{name}\": expected {expected} targets, got {got}"
             ),
-            Self::DuplicateVariable { variable } => {
-                write!(f, "duplicate targets for variable {variable}")
+            Self::DuplicateVariable { name } => {
+                write!(f, "duplicate targets for variable \"{name}\"")
             }
             Self::InconsistentTotals {
                 variable_a,
@@ -166,16 +165,17 @@ mod tests {
                 weight: -1.0,
             },
             RakingError::EmptySurvey,
-            RakingError::VariableIndexOutOfRange {
-                index: 5,
-                n_variables: 3,
+            RakingError::VariableNotFound {
+                name: "foo".into(),
             },
             RakingError::TargetLengthMismatch {
-                variable: 0,
+                name: "age".into(),
                 expected: 3,
                 got: 2,
             },
-            RakingError::DuplicateVariable { variable: 1 },
+            RakingError::DuplicateVariable {
+                name: "gender".into(),
+            },
             RakingError::InconsistentTotals {
                 variable_a: 0,
                 variable_b: 1,

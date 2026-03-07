@@ -1,17 +1,24 @@
 use crate::RakingError;
 use crate::survey::CodedSurvey;
 
-/// A single marginal-target entry: which variable and what target values.
+/// A validated marginal-target entry: resolved variable index and target values.
 #[derive(Debug, Clone)]
 pub struct TargetEntry {
     pub variable_index: usize,
     pub targets: Vec<f64>,
 }
 
+/// An unvalidated entry storing the variable name as specified by the caller.
+#[derive(Debug, Clone)]
+struct UnvalidatedEntry {
+    variable_name: String,
+    targets: Vec<f64>,
+}
+
 /// Builder for assembling population targets before validation.
 #[derive(Debug, Clone)]
 pub struct PopulationTargets {
-    entries: Vec<TargetEntry>,
+    entries: Vec<UnvalidatedEntry>,
 }
 
 impl PopulationTargets {
@@ -22,11 +29,15 @@ impl PopulationTargets {
         }
     }
 
-    /// Add marginal targets for a variable (infallible builder method).
+    /// Add marginal targets for a variable by name.
+    ///
+    /// The name must match one of the `Variable::name` fields in the survey
+    /// passed to [`validate`](Self::validate). Target vector length must equal
+    /// that variable's `levels` count.
     #[must_use]
-    pub fn add(mut self, variable_index: usize, targets: Vec<f64>) -> Self {
-        self.entries.push(TargetEntry {
-            variable_index,
+    pub fn add(mut self, variable_name: &str, targets: Vec<f64>) -> Self {
+        self.entries.push(UnvalidatedEntry {
+            variable_name: variable_name.to_owned(),
             targets,
         });
         self
@@ -43,44 +54,45 @@ impl PopulationTargets {
         survey: &CodedSurvey,
         tolerance: f64,
     ) -> Result<ValidatedTargets, RakingError> {
-        // Check for duplicate variable indices
+        // Check for duplicate variable names
         for (i, a) in self.entries.iter().enumerate() {
             for b in &self.entries[i + 1..] {
-                if a.variable_index == b.variable_index {
+                if a.variable_name == b.variable_name {
                     return Err(RakingError::DuplicateVariable {
-                        variable: a.variable_index,
+                        name: a.variable_name.clone(),
                     });
                 }
             }
         }
 
-        // Validate each entry
+        // Resolve names to indices and validate
+        let mut resolved = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
-            // Variable index in range
-            if entry.variable_index >= survey.n_variables() {
-                return Err(RakingError::VariableIndexOutOfRange {
-                    index: entry.variable_index,
-                    n_variables: survey.n_variables(),
-                });
-            }
+            let var_index = survey
+                .variables()
+                .iter()
+                .position(|v| v.name == entry.variable_name)
+                .ok_or_else(|| RakingError::VariableNotFound {
+                    name: entry.variable_name.clone(),
+                })?;
 
-            // Target length matches levels
-            let expected = survey.variables()[entry.variable_index].levels;
+            let expected = survey.variables()[var_index].levels;
             if entry.targets.len() != expected {
                 return Err(RakingError::TargetLengthMismatch {
-                    variable: entry.variable_index,
+                    name: entry.variable_name.clone(),
                     expected,
                     got: entry.targets.len(),
                 });
             }
+
+            resolved.push(TargetEntry {
+                variable_index: var_index,
+                targets: entry.targets.clone(),
+            });
         }
 
         // Compute grand totals and check consistency
-        let totals: Vec<f64> = self
-            .entries
-            .iter()
-            .map(|e| e.targets.iter().sum())
-            .collect();
+        let totals: Vec<f64> = resolved.iter().map(|e| e.targets.iter().sum()).collect();
 
         if totals.len() >= 2 {
             let first = totals[0];
@@ -88,8 +100,8 @@ impl PopulationTargets {
                 let diff = (first - total).abs();
                 if diff > tolerance {
                     return Err(RakingError::InconsistentTotals {
-                        variable_a: self.entries[0].variable_index,
-                        variable_b: self.entries[i].variable_index,
+                        variable_a: resolved[0].variable_index,
+                        variable_b: resolved[i].variable_index,
                         diff,
                     });
                 }
@@ -99,7 +111,7 @@ impl PopulationTargets {
         let grand_total = totals.first().copied().unwrap_or(0.0);
 
         Ok(ValidatedTargets {
-            entries: self.entries,
+            entries: resolved,
             grand_total,
         })
     }
@@ -160,8 +172,8 @@ mod tests {
     fn valid_targets() {
         let survey = test_survey();
         let targets = PopulationTargets::new()
-            .add(0, vec![100.0, 200.0, 300.0])
-            .add(1, vec![250.0, 350.0])
+            .add("age", vec![100.0, 200.0, 300.0])
+            .add("gender", vec![250.0, 350.0])
             .validate(&survey)
             .unwrap();
 
@@ -174,7 +186,7 @@ mod tests {
     fn single_variable() {
         let survey = test_survey();
         let targets = PopulationTargets::new()
-            .add(0, vec![100.0, 200.0, 300.0])
+            .add("age", vec![100.0, 200.0, 300.0])
             .validate(&survey)
             .unwrap();
 
@@ -183,17 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn variable_out_of_range() {
+    fn variable_not_found() {
         let survey = test_survey();
         let result = PopulationTargets::new()
-            .add(5, vec![1.0, 2.0])
+            .add("nonexistent", vec![1.0, 2.0])
             .validate(&survey);
         assert!(matches!(
             result,
-            Err(RakingError::VariableIndexOutOfRange {
-                index: 5,
-                n_variables: 2,
-            })
+            Err(RakingError::VariableNotFound { ref name }) if name == "nonexistent"
         ));
     }
 
@@ -201,15 +210,15 @@ mod tests {
     fn target_length_mismatch() {
         let survey = test_survey();
         let result = PopulationTargets::new()
-            .add(0, vec![1.0, 2.0]) // age has 3 levels, not 2
+            .add("age", vec![1.0, 2.0]) // age has 3 levels, not 2
             .validate(&survey);
         assert!(matches!(
             result,
             Err(RakingError::TargetLengthMismatch {
-                variable: 0,
+                ref name,
                 expected: 3,
                 got: 2,
-            })
+            }) if name == "age"
         ));
     }
 
@@ -217,12 +226,12 @@ mod tests {
     fn duplicate_variable() {
         let survey = test_survey();
         let result = PopulationTargets::new()
-            .add(0, vec![1.0, 2.0, 3.0])
-            .add(0, vec![2.0, 2.0, 2.0])
+            .add("age", vec![1.0, 2.0, 3.0])
+            .add("age", vec![2.0, 2.0, 2.0])
             .validate(&survey);
         assert!(matches!(
             result,
-            Err(RakingError::DuplicateVariable { variable: 0 })
+            Err(RakingError::DuplicateVariable { ref name }) if name == "age"
         ));
     }
 
@@ -230,8 +239,8 @@ mod tests {
     fn inconsistent_totals() {
         let survey = test_survey();
         let result = PopulationTargets::new()
-            .add(0, vec![100.0, 200.0, 300.0]) // sum = 600
-            .add(1, vec![100.0, 200.0]) // sum = 300
+            .add("age", vec![100.0, 200.0, 300.0]) // sum = 600
+            .add("gender", vec![100.0, 200.0]) // sum = 300
             .validate(&survey);
         assert!(matches!(
             result,
@@ -243,8 +252,8 @@ mod tests {
     fn consistent_within_tolerance() {
         let survey = test_survey();
         let result = PopulationTargets::new()
-            .add(0, vec![100.0, 200.0, 300.0]) // sum = 600
-            .add(1, vec![300.0, 300.0 + 1e-9]) // sum ≈ 600
+            .add("age", vec![100.0, 200.0, 300.0]) // sum = 600
+            .add("gender", vec![300.0, 300.0 + 1e-9]) // sum ≈ 600
             .validate(&survey);
         assert!(result.is_ok());
     }
@@ -253,8 +262,8 @@ mod tests {
     fn grand_total_from_first_entry() {
         let survey = test_survey();
         let targets = PopulationTargets::new()
-            .add(1, vec![5.0, 10.0])
-            .add(0, vec![3.0, 4.0, 8.0])
+            .add("gender", vec![5.0, 10.0])
+            .add("age", vec![3.0, 4.0, 8.0])
             .validate(&survey)
             .unwrap();
         assert_eq!(targets.grand_total(), 15.0);
