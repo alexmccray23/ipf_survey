@@ -19,6 +19,11 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 }
 
 /// Compute the 1-D marginal for `variable` (sum over all other dims).
+///
+/// Exploits the row-major layout: for a given variable, elements belonging to
+/// each level form contiguous runs of length `stride`, repeating every
+/// `stride * levels` elements. This avoids per-element division/modulo and
+/// lets LLVM auto-vectorize the inner sum.
 fn compute_1d_marginal(
     data: &[f64],
     shape: &[usize],
@@ -27,15 +32,22 @@ fn compute_1d_marginal(
 ) -> Vec<f64> {
     let levels = shape[variable];
     let stride = strides[variable];
+    let block_size = stride * levels;
     let mut marginal = vec![0.0; levels];
-    for (i, &val) in data.iter().enumerate() {
-        let coord = (i / stride) % levels;
-        marginal[coord] += val;
+
+    for block in data.chunks(block_size) {
+        for l in 0..levels {
+            let level_slice = &block[l * stride..(l + 1) * stride];
+            marginal[l] += level_slice.iter().sum::<f64>();
+        }
     }
     marginal
 }
 
 /// Scale all cells along `variable` by per-level `factors`.
+///
+/// Uses the same chunked iteration as `compute_1d_marginal` to avoid
+/// per-element division/modulo.
 fn scale_variable(
     data: &mut [f64],
     shape: &[usize],
@@ -45,9 +57,16 @@ fn scale_variable(
 ) {
     let levels = shape[variable];
     let stride = strides[variable];
-    for (i, val) in data.iter_mut().enumerate() {
-        let coord = (i / stride) % levels;
-        *val *= factors[coord];
+    let block_size = stride * levels;
+
+    for block in data.chunks_mut(block_size) {
+        for l in 0..levels {
+            let factor = factors[l];
+            let level_slice = &mut block[l * stride..(l + 1) * stride];
+            for val in level_slice.iter_mut() {
+                *val *= factor;
+            }
+        }
     }
 }
 
