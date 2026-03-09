@@ -1,4 +1,4 @@
-use ipf::{ConvergenceConfig, ConvergenceReport, DenseMatrix, IpfError, IpfMatrix, cell_weights};
+use ipf::{ConvergenceConfig, ConvergenceReport, DenseMatrix, IpfMatrix, cell_weights};
 
 use crate::config::Normalization;
 use crate::error::RakingError;
@@ -112,16 +112,15 @@ pub fn fit_marginals(
         }
     }
 
-    // Did not converge.
+    // Did not converge within tolerance — return result with converged=false.
     let max_diff = max_marginal_diff(matrix.flat_data().unwrap(), &shape, &strides, entries);
 
-    Err(IpfError::NotConverged(ConvergenceReport {
+    Ok(ConvergenceReport {
         converged: false,
         iterations: config.max_iterations,
         final_residual: max_diff,
         residual_history,
     })
-    .into())
 }
 
 fn max_marginal_diff(

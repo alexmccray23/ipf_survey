@@ -14,6 +14,7 @@ mod targets;
 mod weights;
 
 pub use config::{Normalization, RakingConfig};
+pub use ipf::{ConvergenceConfig, ConvergenceCriterion};
 pub use diagnostics::{RakingDiagnostics, WeightSummary};
 pub use error::RakingError;
 pub use rake::{RakingResult, rake, rake_simple};
