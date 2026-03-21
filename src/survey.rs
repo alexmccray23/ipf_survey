@@ -3,8 +3,11 @@ use crate::RakingError;
 /// Describes one categorical variable used for raking.
 #[derive(Debug, Clone)]
 pub struct Variable {
+    /// Human-readable name used to match against population targets.
     pub name: String,
+    /// Number of categories (coded 0..levels-1).
     pub levels: usize,
+    /// Optional display labels for each level (length must equal `levels` if present).
     pub labels: Option<Vec<String>>,
 }
 
@@ -123,27 +126,32 @@ impl CodedSurvey {
         })
     }
 
+    /// Returns the number of records in this survey.
     #[must_use]
     pub const fn n_records(&self) -> usize {
         self.n_records
     }
 
+    /// Returns the number of raking variables.
     #[must_use]
     pub const fn n_variables(&self) -> usize {
         self.variables.len()
     }
 
+    /// Returns the variable definitions for this survey.
     #[must_use]
     pub fn variables(&self) -> &[Variable] {
         &self.variables
     }
 
+    /// Returns the category codes for a single record (one code per variable).
     #[must_use]
     pub fn record_codes(&self, record_index: usize) -> &[usize] {
         let k = self.variables.len();
         &self.codes[record_index * k..(record_index + 1) * k]
     }
 
+    /// Returns the base weight for a record (defaults to 1.0 if unweighted).
     #[must_use]
     pub fn base_weight(&self, record_index: usize) -> f64 {
         self.base_weights
@@ -151,11 +159,13 @@ impl CodedSurvey {
             .map_or(1.0, |bw| bw[record_index])
     }
 
+    /// Returns the full row-major codes array (length = `n_records * n_variables`).
     #[must_use]
     pub fn flat_codes(&self) -> &[usize] {
         &self.codes
     }
 
+    /// Returns the base weights slice, or `None` if all records are unweighted.
     #[must_use]
     pub fn base_weights(&self) -> Option<&[f64]> {
         self.base_weights.as_deref()

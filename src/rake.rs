@@ -11,8 +11,11 @@ use crate::weights::{TrimReport, assign_weights, build_constraints, normalize, t
 /// Result of a raking operation.
 #[derive(Debug)]
 pub struct RakingResult {
+    /// Final per-record raking weights.
     pub weights: Vec<f64>,
+    /// Convergence report from the IPF solver.
     pub convergence: ipf::ConvergenceReport<f64>,
+    /// Weight distribution diagnostics (ESS, DEFF, summary stats).
     pub diagnostics: RakingDiagnostics,
 }
 

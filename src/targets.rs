@@ -22,6 +22,7 @@ pub struct PopulationTargets {
 }
 
 impl PopulationTargets {
+    /// Create an empty target set.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -131,16 +132,19 @@ pub struct ValidatedTargets {
 }
 
 impl ValidatedTargets {
+    /// Returns the grand total (sum of any one variable's targets).
     #[must_use]
     pub const fn grand_total(&self) -> f64 {
         self.grand_total
     }
 
+    /// Returns the resolved target entries.
     #[must_use]
     pub fn entries(&self) -> &[TargetEntry] {
         &self.entries
     }
 
+    /// Returns the number of marginal constraints (one per targeted variable).
     #[must_use]
     pub const fn n_constraints(&self) -> usize {
         self.entries.len()

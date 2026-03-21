@@ -5,13 +5,16 @@ pub struct WeightSummary {
     pub max: f64,
     pub mean: f64,
     pub median: f64,
+    /// Coefficient of variation (`std_dev` / mean).
     pub cv: f64,
 }
 
 /// Full raking diagnostics.
 #[derive(Debug, Clone)]
 pub struct RakingDiagnostics {
+    /// Effective sample size: ESS = (sum w)^2 / sum(w^2).
     pub effective_sample_size: f64,
+    /// Design effect: DEFF = n / ESS.
     pub design_effect: f64,
     pub weight_summary: WeightSummary,
     pub trim_cycles: usize,
