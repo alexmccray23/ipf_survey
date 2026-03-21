@@ -1,4 +1,4 @@
-use ipf::{ConvergenceReport, cell_weights};
+use ipf::{IpfSolver, cell_weights};
 
 use crate::config::RakingConfig;
 use crate::diagnostics::{RakingDiagnostics, compute_diagnostics};
@@ -6,13 +6,13 @@ use crate::error::RakingError;
 use crate::survey::CodedSurvey;
 use crate::tabulate::tabulate;
 use crate::targets::ValidatedTargets;
-use crate::weights::{TrimReport, assign_weights, fit_marginals, normalize, trim_rerake};
+use crate::weights::{TrimReport, assign_weights, build_constraints, normalize, trim_rerake};
 
 /// Result of a raking operation.
 #[derive(Debug)]
 pub struct RakingResult {
     pub weights: Vec<f64>,
-    pub convergence: ConvergenceReport<f64>,
+    pub convergence: ipf::ConvergenceReport<f64>,
     pub diagnostics: RakingDiagnostics,
 }
 
@@ -29,14 +29,12 @@ pub fn rake(
     let seed = tabulate(survey);
     let mut fitted = seed.clone();
 
-    // 3–4. Run IPF with 1-D marginal constraints
-    let entries = targets.entries();
-    let mut convergence = fit_marginals(
-        &mut fitted,
-        entries,
-        &config.convergence,
-        config.diagnostics,
-    )?;
+    // 3. Build solver and 1-D constraints
+    let constraints = build_constraints(targets.entries())?;
+    let solver = IpfSolver::<f64>::with_config(config.convergence.clone());
+
+    // 4. Run IPF
+    let mut convergence = solver.fit(&mut fitted, &constraints)?;
 
     // 5. Trim-rerake if bounds specified
     let trim_report;
@@ -45,21 +43,15 @@ pub fn rake(
             &seed,
             &mut fitted,
             bounds,
-            entries,
-            &config.convergence,
-            config.diagnostics,
+            &solver,
+            &constraints,
             config.max_trim_cycles,
         )?;
         trim_report = report;
 
         // Get convergence from the final state (after trim settled)
         let mut final_fitted = fitted.clone();
-        convergence = fit_marginals(
-            &mut final_fitted,
-            entries,
-            &config.convergence,
-            config.diagnostics,
-        )?;
+        convergence = solver.fit(&mut final_fitted, &constraints)?;
     } else {
         trim_report = TrimReport { cycles: 0 };
     }

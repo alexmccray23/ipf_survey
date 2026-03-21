@@ -1,4 +1,6 @@
-use ipf::{ConvergenceConfig, ConvergenceReport, DenseMatrix, IpfMatrix, cell_weights};
+use ipf::{
+    ConstraintSet, DenseMatrix, IpfMatrix, IpfSolver, ValidatedConstraints, cell_weights,
+};
 
 use crate::config::Normalization;
 use crate::error::RakingError;
@@ -6,156 +8,22 @@ use crate::survey::CodedSurvey;
 use crate::targets::TargetEntry;
 
 // ---------------------------------------------------------------------------
-// Stride helpers for N-D flat-data operations
+// Constraint building helper
 // ---------------------------------------------------------------------------
 
-fn compute_strides(shape: &[usize]) -> Vec<usize> {
-    let n = shape.len();
-    let mut strides = vec![1usize; n];
-    for i in (0..n.saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * shape[i + 1];
-    }
-    strides
-}
-
-/// Compute the 1-D marginal for `variable` (sum over all other dims).
+/// Build `ValidatedConstraints` from resolved target entries.
 ///
-/// Exploits the row-major layout: for a given variable, elements belonging to
-/// each level form contiguous runs of length `stride`, repeating every
-/// `stride * levels` elements. This avoids per-element division/modulo and
-/// lets LLVM auto-vectorize the inner sum.
-fn compute_1d_marginal(
-    data: &[f64],
-    shape: &[usize],
-    strides: &[usize],
-    variable: usize,
-) -> Vec<f64> {
-    let levels = shape[variable];
-    let stride = strides[variable];
-    let block_size = stride * levels;
-    let mut marginal = vec![0.0; levels];
-
-    for block in data.chunks(block_size) {
-        for l in 0..levels {
-            let level_slice = &block[l * stride..(l + 1) * stride];
-            marginal[l] += level_slice.iter().sum::<f64>();
-        }
-    }
-    marginal
-}
-
-/// Scale all cells along `variable` by per-level `factors`.
-///
-/// Uses the same chunked iteration as `compute_1d_marginal` to avoid
-/// per-element division/modulo.
-fn scale_variable(
-    data: &mut [f64],
-    shape: &[usize],
-    strides: &[usize],
-    variable: usize,
-    factors: &[f64],
-) {
-    let levels = shape[variable];
-    let stride = strides[variable];
-    let block_size = stride * levels;
-
-    for block in data.chunks_mut(block_size) {
-        for l in 0..levels {
-            let factor = factors[l];
-            let level_slice = &mut block[l * stride..(l + 1) * stride];
-            for val in level_slice.iter_mut() {
-                *val *= factor;
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Custom IPF fitting loop (1-D marginal constraints for any N)
-// ---------------------------------------------------------------------------
-
-/// Run IPF with 1-D marginal constraints. Works for any number of variables.
-///
-/// The standard `ipf` crate solver uses complementary marginals (sum along one
-/// axis, leaving product-of-other-dims entries). For N > 2 that doesn't map to
-/// 1-D survey-raking constraints. This function implements the classical
-/// Deming–Stephan iteration directly on flat data.
-pub fn fit_marginals(
-    matrix: &mut DenseMatrix<f64>,
+/// The entries have already been validated for grand-total consistency by
+/// `PopulationTargets::validate`, so we use an infinite tolerance to skip
+/// the redundant check in `ConstraintSet::build`.
+pub fn build_constraints(
     entries: &[TargetEntry],
-    config: &ConvergenceConfig<f64>,
-    diagnostics: bool,
-) -> Result<ConvergenceReport<f64>, RakingError> {
-    let shape = matrix.shape().to_vec();
-    let strides = compute_strides(&shape);
-
-    let mut residual_history = if diagnostics { Some(Vec::new()) } else { None };
-    let tolerance: f64 = config.tolerance;
-
-    for iter in 0..config.max_iterations {
-        // Apply each marginal constraint in turn.
-        {
-            let data = matrix.flat_data_mut().unwrap();
-            for entry in entries {
-                let marginal = compute_1d_marginal(data, &shape, &strides, entry.variable_index);
-                let factors: Vec<f64> = entry
-                    .targets
-                    .iter()
-                    .zip(marginal.iter())
-                    .map(|(&t, &m)| {
-                        if m.abs() > f64::EPSILON * 1e3 {
-                            t / m
-                        } else {
-                            1.0
-                        }
-                    })
-                    .collect();
-                scale_variable(data, &shape, &strides, entry.variable_index, &factors);
-            }
-        }
-
-        // Compute residual: max absolute difference between target and current marginals.
-        let max_diff = max_marginal_diff(matrix.flat_data().unwrap(), &shape, &strides, entries);
-
-        if let Some(ref mut hist) = residual_history {
-            hist.push(max_diff);
-        }
-
-        if max_diff <= tolerance {
-            return Ok(ConvergenceReport {
-                converged: true,
-                iterations: iter + 1,
-                final_residual: max_diff,
-                residual_history,
-            });
-        }
-    }
-
-    // Did not converge within tolerance — return result with converged=false.
-    let max_diff = max_marginal_diff(matrix.flat_data().unwrap(), &shape, &strides, entries);
-
-    Ok(ConvergenceReport {
-        converged: false,
-        iterations: config.max_iterations,
-        final_residual: max_diff,
-        residual_history,
-    })
-}
-
-fn max_marginal_diff(
-    data: &[f64],
-    shape: &[usize],
-    strides: &[usize],
-    entries: &[TargetEntry],
-) -> f64 {
-    let mut max_diff = 0.0f64;
+) -> Result<ValidatedConstraints<f64>, RakingError> {
+    let mut cs = ConstraintSet::new();
     for entry in entries {
-        let marginal = compute_1d_marginal(data, shape, strides, entry.variable_index);
-        for (&t, &m) in entry.targets.iter().zip(marginal.iter()) {
-            max_diff = max_diff.max((t - m).abs());
-        }
+        cs = cs.add_1d(entry.variable_index, entry.targets.clone())?;
     }
-    max_diff
+    Ok(cs.build_with_tolerance(f64::INFINITY)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -209,9 +77,8 @@ pub fn trim_rerake(
     seed: &DenseMatrix<f64>,
     fitted: &mut DenseMatrix<f64>,
     bounds: (f64, f64),
-    entries: &[TargetEntry],
-    config: &ConvergenceConfig<f64>,
-    diagnostics: bool,
+    solver: &IpfSolver<f64>,
+    constraints: &ValidatedConstraints<f64>,
     max_cycles: usize,
 ) -> Result<TrimReport, RakingError> {
     let seed_flat = seed.flat_data().unwrap();
@@ -244,7 +111,7 @@ pub fn trim_rerake(
         }
 
         // Re-rake with the clamped matrix.
-        fit_marginals(fitted, entries, config, diagnostics)?;
+        solver.fit(fitted, constraints)?;
     }
 
     Err(RakingError::TrimNotConverged { cycles: max_cycles })
@@ -276,6 +143,7 @@ pub fn normalize(weights: &mut [f64], mode: &Normalization, n_records: usize) {
 mod tests {
     use super::*;
     use crate::survey::Variable;
+
 
     fn simple_survey() -> CodedSurvey {
         // 2x2: var0 has 2 levels, var1 has 2 levels
@@ -352,77 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn fit_marginals_2d() {
-        // 2x2 uniform seed → fit to [3,3] x [3,3] (same grand total of 6)
-        let mut matrix = DenseMatrix::from_shape_vec(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]).unwrap();
-        let entries = vec![
-            TargetEntry {
-                variable_index: 0,
-                targets: vec![3.0, 3.0],
-            },
-            TargetEntry {
-                variable_index: 1,
-                targets: vec![3.0, 3.0],
-            },
-        ];
-        let report =
-            fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false).unwrap();
-        assert!(report.converged);
-
-        // All cells should be 1.5 (6 total / 4 cells)
-        let data = matrix.flat_data().unwrap();
-        for &v in data {
-            assert!((v - 1.5).abs() < 1e-6, "cell = {v}, expected 1.5");
-        }
-    }
-
-    #[test]
-    fn fit_marginals_1d() {
-        // 1D: 3 cells, fit to targets [4, 2, 4]
-        let mut matrix = DenseMatrix::from_shape_vec(vec![3], vec![2.0, 2.0, 1.0]).unwrap();
-        let entries = vec![TargetEntry {
-            variable_index: 0,
-            targets: vec![4.0, 2.0, 4.0],
-        }];
-        let report =
-            fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false).unwrap();
-        assert!(report.converged);
-
-        let data = matrix.flat_data().unwrap();
-        assert!((data[0] - 4.0).abs() < 1e-6);
-        assert!((data[1] - 2.0).abs() < 1e-6);
-        assert!((data[2] - 4.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn fit_marginals_3d() {
-        // 2x2x2 uniform seed, uniform targets → stays uniform
-        let mut matrix = DenseMatrix::from_shape_vec(vec![2, 2, 2], vec![1.0; 8]).unwrap();
-        let entries = vec![
-            TargetEntry {
-                variable_index: 0,
-                targets: vec![4.0, 4.0],
-            },
-            TargetEntry {
-                variable_index: 1,
-                targets: vec![4.0, 4.0],
-            },
-            TargetEntry {
-                variable_index: 2,
-                targets: vec![4.0, 4.0],
-            },
-        ];
-        let report =
-            fit_marginals(&mut matrix, &entries, &ConvergenceConfig::default(), false).unwrap();
-        assert!(report.converged);
-
-        let data = matrix.flat_data().unwrap();
-        for &v in data {
-            assert!((v - 1.0).abs() < 1e-6, "cell = {v}, expected 1.0");
-        }
-    }
-
-    #[test]
     fn trim_rerake_converges() {
         let seed = DenseMatrix::from_shape_vec(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]).unwrap();
         let mut fitted = seed.clone();
@@ -438,20 +235,13 @@ mod tests {
             },
         ];
 
-        let config = ConvergenceConfig::default();
-        fit_marginals(&mut fitted, &entries, &config, false).unwrap();
+        let constraints = build_constraints(&entries).unwrap();
+        let solver = IpfSolver::new();
+        solver.fit(&mut fitted, &constraints).unwrap();
 
         // With wide bounds, no trimming needed
-        let report = trim_rerake(
-            &seed,
-            &mut fitted,
-            (0.1, 100.0),
-            &entries,
-            &config,
-            false,
-            50,
-        )
-        .unwrap();
+        let report = trim_rerake(&seed, &mut fitted, (0.1, 100.0), &solver, &constraints, 50)
+            .unwrap();
         assert_eq!(report.cycles, 0);
     }
 
@@ -471,56 +261,12 @@ mod tests {
             },
         ];
 
-        let config = ConvergenceConfig::default();
-        let result = trim_rerake(
-            &seed,
-            &mut fitted,
-            (0.99, 1.01),
-            &entries,
-            &config,
-            false,
-            0,
-        );
+        let constraints = build_constraints(&entries).unwrap();
+        let solver = IpfSolver::new();
+        let result = trim_rerake(&seed, &mut fitted, (0.99, 1.01), &solver, &constraints, 0);
         assert!(matches!(
             result,
             Err(RakingError::TrimNotConverged { cycles: 0 })
         ));
-    }
-
-    #[test]
-    fn strides_correct() {
-        assert_eq!(compute_strides(&[3, 2]), vec![2, 1]);
-        assert_eq!(compute_strides(&[3, 2, 4]), vec![8, 4, 1]);
-        assert_eq!(compute_strides(&[5]), vec![1]);
-    }
-
-    #[test]
-    fn marginal_1d_correct() {
-        // shape [3, 2], data = [[1, 2], [3, 4], [5, 6]]
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let shape = vec![3, 2];
-        let strides = compute_strides(&shape);
-
-        // Marginal of variable 0 (rows): [1+2, 3+4, 5+6] = [3, 7, 11]
-        let m0 = compute_1d_marginal(&data, &shape, &strides, 0);
-        assert_eq!(m0, vec![3.0, 7.0, 11.0]);
-
-        // Marginal of variable 1 (cols): [1+3+5, 2+4+6] = [9, 12]
-        let m1 = compute_1d_marginal(&data, &shape, &strides, 1);
-        assert_eq!(m1, vec![9.0, 12.0]);
-    }
-
-    #[test]
-    fn marginal_3d_correct() {
-        // shape [2, 2, 2], all ones
-        let data = vec![1.0; 8];
-        let shape = vec![2, 2, 2];
-        let strides = compute_strides(&shape);
-
-        // Each variable should have marginal [4, 4] (each level sums to 4)
-        for v in 0..3 {
-            let m = compute_1d_marginal(&data, &shape, &strides, v);
-            assert_eq!(m, vec![4.0, 4.0], "variable {v}");
-        }
     }
 }
