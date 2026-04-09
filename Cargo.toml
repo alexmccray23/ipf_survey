@@ -2,6 +2,9 @@
 name = "ipf_survey"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Survey raking utility that extends the ipf crate."
+readme = "README.md"
 
 [dependencies]
-ipf = { path = "../ipf", features = ["rayon"] }
+ipf = "0.1"
