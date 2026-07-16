@@ -10,9 +10,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "ipf"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "778cdd00ba8f8580ce91a89c04782268c4e58519f94fd97236c5752b91f93eb5"
+checksum = "654f1f8fcb6d7d59e6664ce802b5f2c0acdc27ab383231e3e0b9f0601cc181f9"
 dependencies = [
  "num-traits",
 ]

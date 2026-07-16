@@ -7,4 +7,4 @@ description = "Survey raking utility that extends the ipf crate."
 readme = "README.md"
 
 [dependencies]
-ipf = "0.1"
+ipf = "0.2"

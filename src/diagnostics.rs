@@ -37,7 +37,7 @@ pub fn compute_diagnostics(
 
     for &w in weights {
         sum += w;
-        sum_sq += w * w;
+        sum_sq = w.mul_add(w, sum_sq);
         if w < min {
             min = w;
         }
