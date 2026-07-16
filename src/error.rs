@@ -53,7 +53,7 @@ pub enum RakingError {
 
     // -- Algorithm errors --
     /// IPF solver error (wraps `ipf::IpfError`).
-    Ipf(IpfError<f64>),
+    Ipf(IpfError),
 
     /// Weight trimming did not converge within `max_trim_cycles`.
     TrimNotConverged { cycles: usize },
@@ -63,8 +63,8 @@ pub enum RakingError {
     InvalidBounds { lower: f64, upper: f64 },
 }
 
-impl From<IpfError<f64>> for RakingError {
-    fn from(err: IpfError<f64>) -> Self {
+impl From<IpfError> for RakingError {
+    fn from(err: IpfError) -> Self {
         Self::Ipf(err)
     }
 }
@@ -118,7 +118,7 @@ impl fmt::Display for RakingError {
                 f,
                 "inconsistent grand totals: variables {variable_a} and {variable_b} differ by {diff}"
             ),
-            Self::Ipf(e) => write!(f, "IPF solver error: {e:?}"),
+            Self::Ipf(e) => write!(f, "IPF solver error: {e}"),
             Self::TrimNotConverged { cycles } => {
                 write!(f, "weight trimming did not converge after {cycles} cycles")
             }
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn from_ipf_error() {
-        let ipf_err = IpfError::<f64>::NegativeTarget { axis: 0, index: 1 };
+        let ipf_err = IpfError::NegativeTarget { axis: 0, index: 1 };
         let raking_err: RakingError = ipf_err.into();
         assert!(matches!(raking_err, RakingError::Ipf(_)));
     }
