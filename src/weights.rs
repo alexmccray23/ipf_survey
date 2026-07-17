@@ -362,7 +362,10 @@ mod tests {
         // Factors within bounds
         let factors = cell_weights(&seed, &fitted).unwrap();
         for &f in factors.flat_data().unwrap() {
-            assert!(f >= 0.5 - 1e-6 && f <= 2.0 + 1e-6, "factor {f} out of bounds");
+            assert!(
+                (0.5 - 1e-6..=2.0 + 1e-6).contains(&f),
+                "factor {f} out of bounds"
+            );
         }
 
         // Original margins still satisfied

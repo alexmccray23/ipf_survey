@@ -44,6 +44,9 @@ pub enum RakingError {
     EmptySurvey,
 
     // -- Target errors --
+    /// No target entries were added before validation.
+    NoTargets,
+
     /// Variable name not found in survey.
     VariableNotFound { name: String },
 
@@ -66,8 +69,8 @@ pub enum RakingError {
 
     /// Grand totals across variables are inconsistent.
     InconsistentTotals {
-        variable_a: usize,
-        variable_b: usize,
+        variable_a: String,
+        variable_b: String,
         diff: f64,
     },
 
@@ -133,6 +136,7 @@ impl fmt::Display for RakingError {
                 write!(f, "record {record}: base weight is NaN or infinite")
             }
             Self::EmptySurvey => write!(f, "survey has no records"),
+            Self::NoTargets => write!(f, "no population targets provided"),
             Self::VariableNotFound { name } => {
                 write!(f, "variable \"{name}\" not found in survey")
             }
@@ -157,7 +161,7 @@ impl fmt::Display for RakingError {
                 diff,
             } => write!(
                 f,
-                "inconsistent grand totals: variables {variable_a} and {variable_b} differ by {diff}"
+                "inconsistent grand totals: variables \"{variable_a}\" and \"{variable_b}\" differ by {diff}"
             ),
             Self::Ipf(e) => write!(f, "IPF solver error: {e}"),
             Self::TrimNotConverged { cycles } => {
@@ -225,10 +229,11 @@ mod tests {
                 name: "gender".into(),
             },
             RakingError::InconsistentTotals {
-                variable_a: 0,
-                variable_b: 1,
+                variable_a: "age".into(),
+                variable_b: "gender".into(),
                 diff: 0.5,
             },
+            RakingError::NoTargets,
             RakingError::Ipf(IpfError::NegativeTarget { axis: 0, index: 0 }),
             RakingError::TrimNotConverged { cycles: 50 },
             RakingError::InvalidBounds {

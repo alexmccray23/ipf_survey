@@ -63,6 +63,10 @@ impl PopulationTargets {
         survey: &CodedSurvey,
         tolerance: f64,
     ) -> Result<ValidatedTargets, RakingError> {
+        if self.entries.is_empty() {
+            return Err(RakingError::NoTargets);
+        }
+
         // Check for duplicate variable names
         for (i, a) in self.entries.iter().enumerate() {
             for b in &self.entries[i + 1..] {
@@ -76,19 +80,22 @@ impl PopulationTargets {
 
         // Resolve names to indices and validate
         let mut resolved = Vec::with_capacity(self.entries.len());
-        for entry in &self.entries {
-            let var_index = survey
+        let mut names = Vec::with_capacity(self.entries.len());
+        for entry in self.entries {
+            let Some(var_index) = survey
                 .variables()
                 .iter()
                 .position(|v| v.name == entry.variable_name)
-                .ok_or_else(|| RakingError::VariableNotFound {
-                    name: entry.variable_name.clone(),
-                })?;
+            else {
+                return Err(RakingError::VariableNotFound {
+                    name: entry.variable_name,
+                });
+            };
 
             let expected = survey.variables()[var_index].levels;
             if entry.targets.len() != expected {
                 return Err(RakingError::TargetLengthMismatch {
-                    name: entry.variable_name.clone(),
+                    name: entry.variable_name,
                     expected,
                     got: entry.targets.len(),
                 });
@@ -97,40 +104,37 @@ impl PopulationTargets {
             for (i, &t) in entry.targets.iter().enumerate() {
                 if !t.is_finite() || t < 0.0 {
                     return Err(RakingError::InvalidTarget {
-                        name: entry.variable_name.clone(),
+                        name: entry.variable_name,
                         index: i,
                         value: t,
                     });
                 }
             }
 
+            names.push(entry.variable_name);
             resolved.push(TargetEntry {
                 variable_index: var_index,
-                targets: entry.targets.clone(),
+                targets: entry.targets,
             });
         }
 
         // Compute grand totals and check consistency
         let totals: Vec<f64> = resolved.iter().map(|e| e.targets.iter().sum()).collect();
 
-        if totals.len() >= 2 {
-            let first = totals[0];
-            // Relative tolerance, scaled by the grand total (clamped to at
-            // least 1 so zero/small totals stay on an absolute scale).
-            let threshold = tolerance * first.max(1.0);
-            for (i, &total) in totals.iter().enumerate().skip(1) {
-                let diff = (first - total).abs();
-                if diff > threshold {
-                    return Err(RakingError::InconsistentTotals {
-                        variable_a: resolved[0].variable_index,
-                        variable_b: resolved[i].variable_index,
-                        diff,
-                    });
-                }
+        let grand_total = totals[0];
+        // Relative tolerance, scaled by the grand total (clamped to at
+        // least 1 so zero/small totals stay on an absolute scale).
+        let threshold = tolerance * grand_total.max(1.0);
+        for (i, &total) in totals.iter().enumerate().skip(1) {
+            let diff = (grand_total - total).abs();
+            if diff > threshold {
+                return Err(RakingError::InconsistentTotals {
+                    variable_a: names[0].clone(),
+                    variable_b: names[i].clone(),
+                    diff,
+                });
             }
         }
-
-        let grand_total = totals.first().copied().unwrap_or(0.0);
 
         Ok(ValidatedTargets {
             entries: resolved,
@@ -269,8 +273,16 @@ mod tests {
             .validate(&survey);
         assert!(matches!(
             result,
-            Err(RakingError::InconsistentTotals { .. })
+            Err(RakingError::InconsistentTotals { ref variable_a, ref variable_b, .. })
+                if variable_a == "age" && variable_b == "gender"
         ));
+    }
+
+    #[test]
+    fn no_targets_rejected() {
+        let survey = test_survey();
+        let result = PopulationTargets::new().validate(&survey);
+        assert!(matches!(result, Err(RakingError::NoTargets)));
     }
 
     #[test]

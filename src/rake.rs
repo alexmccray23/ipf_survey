@@ -222,7 +222,7 @@ mod tests {
         // Since base weights are all 1.0, the weight IS the factor
         for (i, &w) in result.weights.iter().enumerate() {
             assert!(
-                w >= 0.5 - 1e-6 && w <= 3.0 + 1e-6,
+                (0.5 - 1e-6..=3.0 + 1e-6).contains(&w),
                 "weight[{i}] = {w} out of bounds [0.5, 3.0]"
             );
         }

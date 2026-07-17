@@ -2,9 +2,12 @@
 name = "ipf_survey"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 description = "Survey raking utility that extends the ipf crate."
 readme = "README.md"
+keywords = ["survey", "raking", "weighting", "ipf", "statistics"]
+categories = ["science", "mathematics", "algorithms"]
 
 [features]
 default = []
@@ -15,3 +18,6 @@ diagnostics = ["ipf/diagnostics"]
 
 [dependencies]
 ipf = "0.2"
+
+[dev-dependencies]
+proptest = "1.10"

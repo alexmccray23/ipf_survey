@@ -57,15 +57,17 @@ pub fn compute_diagnostics(
     let std_dev = (var_sum / n).sqrt();
     let cv = if mean > 0.0 { std_dev / mean } else { 0.0 };
 
-    // Median
+    // Median via O(n) selection instead of a full sort
     let median = {
-        let mut sorted = weights.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let len = sorted.len();
+        let mut scratch = weights.to_vec();
+        let len = scratch.len();
+        let (below, upper, _) = scratch.select_nth_unstable_by(len / 2, f64::total_cmp);
         if len % 2 == 1 {
-            sorted[len / 2]
+            *upper
         } else {
-            f64::midpoint(sorted[len / 2 - 1], sorted[len / 2])
+            // Even length: the lower middle is the max of the left partition.
+            let lower = below.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            f64::midpoint(lower, *upper)
         }
     };
 
