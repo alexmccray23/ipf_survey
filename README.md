@@ -35,7 +35,7 @@ hand.
 
 ```toml
 [dependencies]
-ipf_survey = "0.1"
+ipf_survey = "0.2"
 ```
 
 ## Quick start
