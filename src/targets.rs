@@ -44,12 +44,20 @@ impl PopulationTargets {
         self
     }
 
-    /// Validate against a survey with default tolerance (1e-6).
+    /// Validate against a survey with the default grand-total tolerance
+    /// (1e-6, relative — see [`validate_with_tolerance`](Self::validate_with_tolerance)).
     pub fn validate(self, survey: &CodedSurvey) -> Result<ValidatedTargets, RakingError> {
         self.validate_with_tolerance(survey, 1e-6)
     }
 
     /// Validate against a survey with a custom grand-total tolerance.
+    ///
+    /// `tolerance` is interpreted **relative** to the grand total `G`
+    /// (clamped to at least 1), matching the `ipf` crate's convention:
+    /// grand totals are consistent when `|G - total_i| <= tolerance * max(G, 1)`.
+    /// This keeps the default meaningful whether targets sum to 30 or to
+    /// hundreds of millions — population-scale margins that were rounded to
+    /// whole people still validate, while genuinely mismatched totals fail.
     pub fn validate_with_tolerance(
         self,
         survey: &CodedSurvey,
@@ -107,9 +115,12 @@ impl PopulationTargets {
 
         if totals.len() >= 2 {
             let first = totals[0];
+            // Relative tolerance, scaled by the grand total (clamped to at
+            // least 1 so zero/small totals stay on an absolute scale).
+            let threshold = tolerance * first.max(1.0);
             for (i, &total) in totals.iter().enumerate().skip(1) {
                 let diff = (first - total).abs();
-                if diff > tolerance {
+                if diff > threshold {
                     return Err(RakingError::InconsistentTotals {
                         variable_a: resolved[0].variable_index,
                         variable_b: resolved[i].variable_index,
@@ -270,6 +281,48 @@ mod tests {
             .add("gender", vec![300.0, 300.0 + 1e-9]) // sum ≈ 600
             .validate(&survey);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn population_scale_rounding_tolerated() {
+        // Census-style margins rounded to whole people: totals differ by 1
+        // out of 300 million. Relative tolerance (1e-6 * G = 300) accepts it.
+        let survey = test_survey();
+        let result = PopulationTargets::new()
+            .add("age", vec![100_000_000.0, 100_000_000.0, 100_000_001.0])
+            .add("gender", vec![150_000_000.0, 150_000_000.0])
+            .validate(&survey);
+        assert!(result.is_ok(), "rounded population totals should validate");
+    }
+
+    #[test]
+    fn custom_tolerance_is_relative() {
+        // Same 1-person mismatch, but a tolerance of 1e-12 scales to a
+        // threshold of 3e-4 and rejects it.
+        let survey = test_survey();
+        let result = PopulationTargets::new()
+            .add("age", vec![100_000_000.0, 100_000_000.0, 100_000_001.0])
+            .add("gender", vec![150_000_000.0, 150_000_000.0])
+            .validate_with_tolerance(&survey, 1e-12);
+        assert!(matches!(
+            result,
+            Err(RakingError::InconsistentTotals { .. })
+        ));
+    }
+
+    #[test]
+    fn small_totals_use_absolute_scale() {
+        // Grand total < 1: threshold clamps to tolerance * 1, so a 0.5
+        // mismatch against a 0.6 total is still caught.
+        let survey = test_survey();
+        let result = PopulationTargets::new()
+            .add("age", vec![0.2, 0.2, 0.2]) // sum = 0.6
+            .add("gender", vec![0.05, 0.05]) // sum = 0.1
+            .validate(&survey);
+        assert!(matches!(
+            result,
+            Err(RakingError::InconsistentTotals { .. })
+        ));
     }
 
     #[test]
