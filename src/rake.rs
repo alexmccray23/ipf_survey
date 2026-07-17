@@ -4,7 +4,7 @@ use crate::config::RakingConfig;
 use crate::diagnostics::{RakingDiagnostics, compute_diagnostics};
 use crate::error::RakingError;
 use crate::survey::CodedSurvey;
-use crate::tabulate::tabulate;
+use crate::tabulate::{strides, tabulate};
 use crate::targets::ValidatedTargets;
 use crate::weights::{TrimReport, assign_weights, build_constraints, normalize, trim_rerake};
 
@@ -13,13 +13,19 @@ use crate::weights::{TrimReport, assign_weights, build_constraints, normalize, t
 pub struct RakingResult {
     /// Final per-record raking weights.
     pub weights: Vec<f64>,
-    /// Convergence report from the IPF solver.
+    /// Convergence report from the IPF solver. `converged` is `false` when
+    /// the solver ran out of iterations before meeting the tolerance; the
+    /// weights are still returned, so check this flag when it matters.
     pub convergence: ipf::ConvergenceReport<f64>,
     /// Weight distribution diagnostics (ESS, DEFF, summary stats).
     pub diagnostics: RakingDiagnostics,
 }
 
 /// Compute raking weights for a coded survey.
+///
+/// A result of `Ok` means the pipeline ran to completion; it does not by
+/// itself guarantee the IPF solver met its tolerance. Inspect
+/// [`RakingResult::convergence`] for that.
 pub fn rake(
     survey: &CodedSurvey,
     targets: &ValidatedTargets,
@@ -34,37 +40,54 @@ pub fn rake(
 
     // 3. Build solver and 1-D constraints
     let constraints = build_constraints(targets.entries())?;
-    let solver = IpfSolver::<f64>::with_config(config.convergence.clone());
+    let solver =
+        IpfSolver::<f64>::with_config(config.convergence.clone()).diagnostics(config.diagnostics);
 
     // 4. Run IPF
     let mut convergence = solver.fit(&mut fitted, &constraints)?;
 
     // 5. Trim-rerake if bounds specified
-    let trim_report;
-    if let Some(bounds) = config.weight_bounds {
+    let trim_report = if let Some(bounds) = config.weight_bounds {
         let report = trim_rerake(
             &seed,
             &mut fitted,
             bounds,
             &solver,
-            &constraints,
+            targets.entries(),
             config.max_trim_cycles,
+            config.trim_tolerance,
         )?;
-        trim_report = report;
 
-        // Get convergence from the final state (after trim settled)
-        let mut final_fitted = fitted.clone();
-        convergence = solver.fit(&mut final_fitted, &constraints)?;
+        // Re-check the trimmed matrix against the original constraints
+        // without mutating it.
+        convergence = solver.evaluate(&fitted, &constraints)?;
+        report
     } else {
-        trim_report = TrimReport { cycles: 0 };
-    }
+        TrimReport {
+            cycles: 0,
+            frozen: Vec::new(),
+        }
+    };
 
     // 6. Compute adjustment factors and assign per-record weights
     let factors = cell_weights(&seed, &fitted)?;
-    let (mut weights, trimmed_records) = assign_weights(survey, &factors, config.weight_bounds);
+    let mut weights = assign_weights(survey, &factors, config.weight_bounds);
 
-    let final_trimmed = if config.weight_bounds.is_some() {
-        trimmed_records
+    // Records living in frozen cells are the ones whose factor was trimmed.
+    let trimmed_records = if trim_report.frozen.iter().any(|&f| f) {
+        let shape: Vec<usize> = survey.variables().iter().map(|v| v.levels).collect();
+        let strides = strides(&shape);
+        (0..survey.n_records())
+            .filter(|&r| {
+                let cell: usize = survey
+                    .record_codes(r)
+                    .iter()
+                    .zip(&strides)
+                    .map(|(c, s)| c * s)
+                    .sum();
+                trim_report.frozen[cell]
+            })
+            .count()
     } else {
         0
     };
@@ -73,7 +96,7 @@ pub fn rake(
     normalize(&mut weights, &config.normalization, survey.n_records());
 
     // 8. Compute diagnostics
-    let diagnostics = compute_diagnostics(&weights, trim_report.cycles, final_trimmed);
+    let diagnostics = compute_diagnostics(&weights, trim_report.cycles, trimmed_records);
 
     Ok(RakingResult {
         weights,
@@ -357,6 +380,86 @@ mod tests {
         let (survey, targets) = design_example();
         let result = rake_simple(&survey, &targets).unwrap();
         assert!(result.convergence.converged);
+    }
+
+    #[test]
+    fn binding_trim_converges_and_reports() {
+        // Seed 2x2 [[4,1],[1,1]], uniform margins. The unbounded factor for
+        // cell (1,1) is 2.333; bounds (0.5, 2.0) bind it.
+        let vars = vec![
+            Variable {
+                name: "a".into(),
+                levels: 2,
+                labels: None,
+            },
+            Variable {
+                name: "b".into(),
+                levels: 2,
+                labels: None,
+            },
+        ];
+        let codes = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1];
+        let survey = CodedSurvey::from_flat_codes(vars, codes, 7).unwrap();
+        let targets = PopulationTargets::new()
+            .add("a", vec![3.5, 3.5])
+            .add("b", vec![3.5, 3.5])
+            .validate(&survey)
+            .unwrap();
+
+        let config = RakingConfig {
+            weight_bounds: Some((0.5, 2.0)),
+            ..Default::default()
+        };
+        let result = rake(&survey, &targets, &config).unwrap();
+
+        // All factors (== weights, base weight 1.0) within bounds
+        for (i, &w) in result.weights.iter().enumerate() {
+            assert!(
+                (0.5 - 1e-6..=2.0 + 1e-6).contains(&w),
+                "weight[{i}] = {w} out of bounds"
+            );
+        }
+
+        // Marginals still met exactly
+        let mut ma = [0.0; 2];
+        for r in 0..survey.n_records() {
+            ma[survey.record_codes(r)[0]] += result.weights[r];
+        }
+        assert!((ma[0] - 3.5).abs() < 1e-6, "marginal a[0] = {}", ma[0]);
+        assert!((ma[1] - 3.5).abs() < 1e-6, "marginal a[1] = {}", ma[1]);
+
+        // Trimming actually happened and is reported: one record in cell (1,1)
+        assert!(result.diagnostics.trim_cycles > 0);
+        assert_eq!(result.diagnostics.trimmed_records, 1);
+        assert!(result.convergence.converged);
+    }
+
+    #[test]
+    fn infeasible_trim_errors() {
+        // 1-D: level 2 needs factor 4.0, upper bound 2.0 → infeasible.
+        let vars = vec![Variable {
+            name: "x".into(),
+            levels: 3,
+            labels: None,
+        }];
+        let survey = CodedSurvey::from_flat_codes(vars, vec![0, 0, 1, 1, 2], 5).unwrap();
+        let targets = PopulationTargets::new()
+            .add("x", vec![4.0, 2.0, 4.0])
+            .validate(&survey)
+            .unwrap();
+
+        let config = RakingConfig {
+            weight_bounds: Some((0.5, 2.0)),
+            ..Default::default()
+        };
+        let result = rake(&survey, &targets, &config);
+        assert!(matches!(
+            result,
+            Err(RakingError::TrimInfeasible {
+                variable: 0,
+                level: 2,
+            })
+        ));
     }
 
     #[test]

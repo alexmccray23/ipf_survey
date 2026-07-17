@@ -21,14 +21,22 @@ pub struct RakingConfig {
     /// Convergence settings for the IPF solver.
     pub convergence: ConvergenceConfig<f64>,
     /// Optional (lower, upper) bounds for the adjustment factor.
+    ///
+    /// The lower bound must be finite and non-negative; the upper bound may
+    /// be `f64::INFINITY` to trim from below only.
     pub weight_bounds: Option<(f64, f64)>,
     /// Maximum trim-rerake cycles before giving up.
     pub max_trim_cycles: usize,
-    /// Stop trimming when max adjustment change < this.
+    /// Slack when testing adjustment factors against `weight_bounds` during
+    /// trimming: factors within this distance of a bound count as in bounds.
+    /// Guards against endless re-trimming when the solution sits exactly on
+    /// a bound.
     pub trim_tolerance: f64,
     /// Weight normalization mode.
     pub normalization: Normalization,
-    /// Whether to record per-iteration diagnostics in the IPF solver.
+    /// Whether to record per-iteration residuals in the IPF solver
+    /// (available via `RakingResult::convergence.residual_history`).
+    /// Requires this crate's `diagnostics` feature; a no-op otherwise.
     pub diagnostics: bool,
 }
 
@@ -46,12 +54,18 @@ impl Default for RakingConfig {
 }
 
 impl RakingConfig {
-    /// Validate the configuration, returning an error if bounds are invalid.
+    /// Validate the configuration, returning an error if bounds or the
+    /// normalization total are invalid.
     pub fn validate(&self) -> Result<(), RakingError> {
         if let Some((lower, upper)) = self.weight_bounds
-            && (lower < 0.0 || lower > upper)
+            && (!lower.is_finite() || upper.is_nan() || lower < 0.0 || lower > upper)
         {
             return Err(RakingError::InvalidBounds { lower, upper });
+        }
+        if let Normalization::SumTo(v) = self.normalization
+            && (!v.is_finite() || v <= 0.0)
+        {
+            return Err(RakingError::InvalidNormalization { value: v });
         }
         Ok(())
     }
@@ -116,5 +130,49 @@ mod tests {
     fn no_bounds_is_valid() {
         let cfg = RakingConfig::default();
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn nan_bounds_rejected() {
+        let cfg = RakingConfig {
+            weight_bounds: Some((f64::NAN, 3.0)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(RakingError::InvalidBounds { .. })
+        ));
+
+        let cfg = RakingConfig {
+            weight_bounds: Some((0.5, f64::NAN)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(RakingError::InvalidBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn infinite_upper_bound_allowed() {
+        let cfg = RakingConfig {
+            weight_bounds: Some((0.5, f64::INFINITY)),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_normalization_total() {
+        for v in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+            let cfg = RakingConfig {
+                normalization: Normalization::SumTo(v),
+                ..Default::default()
+            };
+            assert!(
+                matches!(cfg.validate(), Err(RakingError::InvalidNormalization { .. })),
+                "SumTo({v}) should be rejected"
+            );
+        }
     }
 }

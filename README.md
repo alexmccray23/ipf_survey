@@ -1,4 +1,4 @@
-# ipf_survey
+# `ipf_survey`
 
 Survey-record raking via iterative proportional fitting (IPF). Given coded
 survey microdata and known population marginals, `ipf_survey` produces one
@@ -97,9 +97,10 @@ If you do not need trimming, normalization, or custom convergence settings,
 2. **Build IPF constraints** from the validated population targets.
 3. **Run the IPF solver** from the `ipf` crate to produce a fitted matrix.
 4. **Derive cell adjustment factors** as `fitted / seed`.
-5. **Optionally trim** factors to `weight_bounds`, clamping out-of-range
-   cells and re-raking until all factors land inside the bounds (or
-   `max_trim_cycles` is exhausted).
+5. **Optionally trim** factors to `weight_bounds`: out-of-range cells are
+   frozen at the bound, their mass is subtracted from the targets, and the
+   remaining cells are re-raked. Cycles repeat until every factor is inside
+   the bounds (or `max_trim_cycles` is exhausted).
 6. **Assign per-record weights** as `base_weight * adjustment_factor[cell]`.
 7. **Normalize** to the requested total, if any.
 8. **Compute diagnostics** (ESS, DEFF, weight summary).
@@ -112,15 +113,29 @@ with non-uniform base weights, the final weight is
 `base_weight * adjustment_factor`, and the bound applies to the factor. This
 matches standard survey-methodology practice and keeps trimming compatible
 with the cell-level IPF framework. If you need bounds on the final weight
-itself, apply that as a post-processing step on `result.weights`.
+itself, apply that as a post-processing step on `result.weights`. The upper
+bound may be `f64::INFINITY` to trim from below only.
+
+When trimming succeeds, the returned weights respect the bounds **and** the
+weighted marginals still match the targets exactly — the mass a frozen cell
+gives up is redistributed over the remaining cells. Bounds that are too
+tight for the targets (e.g. a margin level that needs a 4x adjustment under
+an upper bound of 2.0) are reported as `RakingError::TrimInfeasible` rather
+than silently missing the targets; widen the bounds or revisit the targets.
 
 ## Errors
 
 All fallible operations return [`RakingError`], which covers survey
-construction problems (out-of-range codes, label/weight length mismatches),
-target problems (unknown variables, length mismatches, inconsistent grand
-totals), IPF solver failures (wrapped from the `ipf` crate), and trimming
-non-convergence.
+construction problems (out-of-range codes, label/weight length mismatches,
+non-finite weights), target problems (unknown variables, length mismatches,
+negative or non-finite values, inconsistent grand totals), IPF solver
+failures (wrapped from the `ipf` crate), and trimming failures
+(non-convergence or infeasible bounds).
+
+Note that `rake` returning `Ok` means the pipeline completed; whether the
+IPF solver met its tolerance is reported separately in
+`result.convergence.converged`. Check that flag when downstream correctness
+depends on the marginals matching.
 
 ## Performance notes
 
@@ -130,8 +145,9 @@ non-convergence.
   live in L1/L2 cache for realistic survey dimensions.
 - Memory is dominated by the coded records: `n_records * n_variables * 8`
   bytes. One million records by five variables is about 40 MB.
-- The `ipf` dependency is enabled with the `rayon` feature, so the IPF inner
-  loop parallelizes automatically when it is profitable.
+- Enable this crate's `rayon` feature to turn on the `ipf` crate's parallel
+  inner loop; the `diagnostics` feature likewise enables per-iteration
+  residual history (recorded when `RakingConfig::diagnostics` is set).
 
 ## License
 

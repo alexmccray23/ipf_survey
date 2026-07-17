@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
@@ -14,7 +15,7 @@ mod targets;
 mod weights;
 
 pub use config::{Normalization, RakingConfig};
-pub use ipf::{ConvergenceConfig, ConvergenceCriterion};
+pub use ipf::{ConvergenceConfig, ConvergenceCriterion, ConvergenceReport, IpfError};
 pub use diagnostics::{RakingDiagnostics, WeightSummary};
 pub use error::RakingError;
 pub use rake::{RakingResult, rake, rake_simple};

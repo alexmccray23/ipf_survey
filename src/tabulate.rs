@@ -21,6 +21,15 @@ pub fn tabulate(survey: &CodedSurvey) -> DenseMatrix<f64> {
     matrix
 }
 
+/// Row-major strides for a shape: `flat_index = dot(multi_index, strides)`.
+pub fn strides(shape: &[usize]) -> Vec<usize> {
+    let mut s = vec![1; shape.len()];
+    for i in (0..shape.len().saturating_sub(1)).rev() {
+        s[i] = s[i + 1] * shape[i + 1];
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

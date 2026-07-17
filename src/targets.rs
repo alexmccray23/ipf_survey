@@ -86,6 +86,16 @@ impl PopulationTargets {
                 });
             }
 
+            for (i, &t) in entry.targets.iter().enumerate() {
+                if !t.is_finite() || t < 0.0 {
+                    return Err(RakingError::InvalidTarget {
+                        name: entry.variable_name.clone(),
+                        index: i,
+                        value: t,
+                    });
+                }
+            }
+
             resolved.push(TargetEntry {
                 variable_index: var_index,
                 targets: entry.targets.clone(),
@@ -260,6 +270,30 @@ mod tests {
             .add("gender", vec![300.0, 300.0 + 1e-9]) // sum ≈ 600
             .validate(&survey);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn negative_target_rejected() {
+        let survey = test_survey();
+        let result = PopulationTargets::new()
+            .add("age", vec![1.0, -2.0, 3.0])
+            .validate(&survey);
+        assert!(matches!(
+            result,
+            Err(RakingError::InvalidTarget { ref name, index: 1, .. }) if name == "age"
+        ));
+    }
+
+    #[test]
+    fn nan_target_rejected() {
+        let survey = test_survey();
+        let result = PopulationTargets::new()
+            .add("age", vec![1.0, f64::NAN, 3.0])
+            .validate(&survey);
+        assert!(matches!(
+            result,
+            Err(RakingError::InvalidTarget { index: 1, .. })
+        ));
     }
 
     #[test]

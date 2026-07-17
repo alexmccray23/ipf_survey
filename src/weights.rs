@@ -32,15 +32,15 @@ pub fn build_constraints(
 
 /// Maps cell adjustment factors to per-record weights.
 ///
-/// Returns `(weights, trimmed_count)` where `trimmed_count` is the number of
-/// records whose factor was clamped to a bound.
+/// When `bounds` is given, factors are clamped as a final safety net against
+/// floating-point drift; after a successful [`trim_rerake`] all factors are
+/// already within bounds.
 pub fn assign_weights(
     survey: &CodedSurvey,
     factors: &DenseMatrix<f64>,
     bounds: Option<(f64, f64)>,
-) -> (Vec<f64>, usize) {
+) -> Vec<f64> {
     let mut weights = Vec::with_capacity(survey.n_records());
-    let mut trimmed = 0;
 
     for r in 0..survey.n_records() {
         let codes = survey.record_codes(r);
@@ -48,9 +48,9 @@ pub fn assign_weights(
 
         let bw = survey.base_weight(r);
         if let Some((lo, hi)) = bounds {
-            // Don't count structural-zero cells (factor 0 from 0/0) as trimmed
-            if bw > 0.0 && (factor < lo || factor > hi) {
-                trimmed += 1;
+            // Skip structural-zero cells (factor 0 from 0/0): clamping would
+            // fabricate weight for records that carry none.
+            if bw > 0.0 && factor > 0.0 {
                 factor = factor.clamp(lo, hi);
             }
         }
@@ -58,7 +58,7 @@ pub fn assign_weights(
         weights.push(bw * factor);
     }
 
-    (weights, trimmed)
+    weights
 }
 
 // ---------------------------------------------------------------------------
@@ -67,51 +67,137 @@ pub fn assign_weights(
 
 /// Report from the trim-rerake loop.
 pub struct TrimReport {
+    /// Number of trim cycles run (0 = no factor needed trimming).
     pub cycles: usize,
+    /// Flat per-cell mask: `true` for cells whose factor was frozen at a
+    /// bound. Empty when trimming never ran.
+    pub frozen: Vec<bool>,
 }
 
-/// Iterative clamp-and-refit loop for weight trimming.
+/// Iterative freeze-and-rerake loop for weight trimming.
 ///
-/// Clamps adjustment factors at the cell level, then re-runs IPF until stable.
+/// Each cycle clamps out-of-bounds adjustment factors at the cell level and
+/// *freezes* those cells at `seed * bound`. The frozen mass is subtracted
+/// from the marginal targets and IPF re-fits only the free cells, so a
+/// binding bound cannot be undone by the re-rake (which is what made the
+/// naive clamp-and-refit loop oscillate forever). Terminates because the
+/// frozen set only grows.
+///
+/// On success the full matrix satisfies the original constraints and every
+/// factor lies within `bounds`. Fails with [`RakingError::TrimInfeasible`]
+/// when the frozen mass conflicts with a marginal target (the bounds are too
+/// tight for the targets), or [`RakingError::TrimNotConverged`] when a
+/// re-rake of the free cells cannot converge.
 pub fn trim_rerake(
     seed: &DenseMatrix<f64>,
     fitted: &mut DenseMatrix<f64>,
     bounds: (f64, f64),
     solver: &IpfSolver<f64>,
-    constraints: &ValidatedConstraints<f64>,
+    entries: &[TargetEntry],
     max_cycles: usize,
+    tolerance: f64,
 ) -> Result<TrimReport, RakingError> {
-    let seed_flat = seed.flat_data().unwrap();
+    let shape = seed.shape().to_vec();
+    let strides = crate::tabulate::strides(&shape);
+    let seed_flat = seed.flat_data().unwrap().to_vec();
+    let n_cells = seed_flat.len();
+    let (lo, hi) = bounds;
 
-    for cycle in 0..max_cycles {
+    let mut frozen = vec![false; n_cells];
+    let mut frozen_values = vec![0.0; n_cells];
+
+    for cycle in 0..=max_cycles {
+        // Find newly out-of-bounds factors among free, non-structural-zero
+        // cells. Structural zeros (seed 0) have a meaningless 0/0 factor.
         let factors = cell_weights(seed, fitted)?;
         let factors_flat = factors.flat_data().unwrap();
-        let fitted_flat = fitted.flat_data_mut().unwrap();
 
         let mut any_trimmed = false;
-        for (i, &factor) in factors_flat.iter().enumerate() {
-            // Skip structural zeros: if seed cell is zero, both seed and fitted
-            // are zero and the factor is meaningless (0/0 → 0). Clamping would
-            // set fitted = 0 * bound = 0, which changes nothing but prevents
-            // convergence.
-            if seed_flat[i] == 0.0 {
+        for i in 0..n_cells {
+            if frozen[i] || seed_flat[i] == 0.0 {
                 continue;
             }
-            if factor < bounds.0 {
-                fitted_flat[i] = seed_flat[i] * bounds.0;
+            let factor = factors_flat[i];
+            if factor < lo - tolerance {
+                frozen[i] = true;
+                frozen_values[i] = seed_flat[i] * lo;
                 any_trimmed = true;
-            } else if factor > bounds.1 {
-                fitted_flat[i] = seed_flat[i] * bounds.1;
+            } else if factor > hi + tolerance {
+                frozen[i] = true;
+                frozen_values[i] = seed_flat[i] * hi;
                 any_trimmed = true;
             }
         }
 
         if !any_trimmed {
-            return Ok(TrimReport { cycles: cycle });
+            return Ok(TrimReport {
+                cycles: cycle,
+                frozen,
+            });
+        }
+        if cycle == max_cycles {
+            break;
         }
 
-        // Re-rake with the clamped matrix.
-        solver.fit(fitted, constraints)?;
+        // Zero out frozen cells; IPF scaling keeps zero cells at zero, so
+        // the fit below only moves the free cells.
+        {
+            let fitted_flat = fitted.flat_data_mut().unwrap();
+            for i in 0..n_cells {
+                if frozen[i] {
+                    fitted_flat[i] = 0.0;
+                }
+            }
+        }
+
+        // Reduce each marginal target by the frozen mass in that margin
+        // level, and check feasibility against the free mass that remains.
+        let mut reduced_entries = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let axis = entry.variable_index;
+            let mut reduced = entry.targets.clone();
+            let mut free_mass = vec![0.0; reduced.len()];
+
+            for i in 0..n_cells {
+                let level = (i / strides[axis]) % shape[axis];
+                if frozen[i] {
+                    reduced[level] -= frozen_values[i];
+                } else {
+                    free_mass[level] += seed_flat[i];
+                }
+            }
+
+            for (level, r) in reduced.iter_mut().enumerate() {
+                let eps = tolerance * entry.targets[level].abs().max(1.0);
+                if *r < -eps || (*r > eps && free_mass[level] == 0.0) {
+                    return Err(RakingError::TrimInfeasible {
+                        variable: axis,
+                        level,
+                    });
+                }
+                *r = r.max(0.0);
+            }
+
+            reduced_entries.push(TargetEntry {
+                variable_index: axis,
+                targets: reduced,
+            });
+        }
+
+        // Re-rake the free cells against the reduced targets.
+        let reduced_constraints = build_constraints(&reduced_entries)?;
+        let report = solver.fit(fitted, &reduced_constraints)?;
+        if !report.converged {
+            return Err(RakingError::TrimNotConverged { cycles: cycle + 1 });
+        }
+
+        // Restore the frozen cells.
+        let fitted_flat = fitted.flat_data_mut().unwrap();
+        for i in 0..n_cells {
+            if frozen[i] {
+                fitted_flat[i] = frozen_values[i];
+            }
+        }
     }
 
     Err(RakingError::TrimNotConverged { cycles: max_cycles })
@@ -167,10 +253,9 @@ mod tests {
     fn assign_weights_no_bounds() {
         let survey = simple_survey();
         let factors = DenseMatrix::from_shape_vec(vec![2, 2], vec![2.0, 2.0, 2.0, 2.0]).unwrap();
-        let (weights, trimmed) = assign_weights(&survey, &factors, None);
+        let weights = assign_weights(&survey, &factors, None);
 
         assert_eq!(weights, vec![2.0, 2.0, 2.0, 2.0]);
-        assert_eq!(trimmed, 0);
     }
 
     #[test]
@@ -178,13 +263,12 @@ mod tests {
         let survey = simple_survey();
         // factors: [0.1, 5.0, 1.0, 1.0] — first too low, second too high
         let factors = DenseMatrix::from_shape_vec(vec![2, 2], vec![0.1, 5.0, 1.0, 1.0]).unwrap();
-        let (weights, trimmed) = assign_weights(&survey, &factors, Some((0.5, 3.0)));
+        let weights = assign_weights(&survey, &factors, Some((0.5, 3.0)));
 
         assert_eq!(weights[0], 0.5); // clamped from 0.1 to 0.5
         assert_eq!(weights[1], 3.0); // clamped from 5.0 to 3.0
         assert_eq!(weights[2], 1.0);
         assert_eq!(weights[3], 1.0);
-        assert_eq!(trimmed, 2);
     }
 
     #[test]
@@ -240,13 +324,81 @@ mod tests {
         solver.fit(&mut fitted, &constraints).unwrap();
 
         // With wide bounds, no trimming needed
-        let report = trim_rerake(&seed, &mut fitted, (0.1, 100.0), &solver, &constraints, 50)
+        let report = trim_rerake(&seed, &mut fitted, (0.1, 100.0), &solver, &entries, 50, 1e-6)
             .unwrap();
         assert_eq!(report.cycles, 0);
+        assert!(report.frozen.iter().all(|&f| !f));
     }
 
     #[test]
-    fn trim_not_converged() {
+    fn trim_binding_bounds_converge() {
+        // Seed [[4,1],[1,1]], uniform margins 3.5/3.5. Unbounded factors are
+        // {0.583, 1.167, 1.167, 2.333}; bounds (0.5, 2.0) bind cell (1,1).
+        // The feasible solution freezes (1,1) at 2.0 and re-rakes the rest
+        // to [[2.0, 1.5], [1.5, 2.0]].
+        let seed = DenseMatrix::from_shape_vec(vec![2, 2], vec![4.0, 1.0, 1.0, 1.0]).unwrap();
+        let mut fitted = seed.clone();
+
+        let entries = vec![
+            TargetEntry {
+                variable_index: 0,
+                targets: vec![3.5, 3.5],
+            },
+            TargetEntry {
+                variable_index: 1,
+                targets: vec![3.5, 3.5],
+            },
+        ];
+
+        let constraints = build_constraints(&entries).unwrap();
+        let solver = IpfSolver::new();
+        solver.fit(&mut fitted, &constraints).unwrap();
+
+        let report = trim_rerake(&seed, &mut fitted, (0.5, 2.0), &solver, &entries, 50, 1e-6)
+            .unwrap();
+        assert!(report.cycles > 0);
+        assert_eq!(report.frozen, vec![false, false, false, true]);
+
+        // Factors within bounds
+        let factors = cell_weights(&seed, &fitted).unwrap();
+        for &f in factors.flat_data().unwrap() {
+            assert!(f >= 0.5 - 1e-6 && f <= 2.0 + 1e-6, "factor {f} out of bounds");
+        }
+
+        // Original margins still satisfied
+        assert!((fitted.get(&[0, 0]) + fitted.get(&[0, 1]) - 3.5).abs() < 1e-8);
+        assert!((fitted.get(&[0, 0]) + fitted.get(&[1, 0]) - 3.5).abs() < 1e-8);
+        assert!((fitted.get(&[0, 0]) - 2.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn trim_infeasible_one_dimension() {
+        // 1-D: seed margin [2,2,1], target [4,2,4]. Level 2 needs factor 4.0;
+        // with an upper bound of 2.0 the target can never be met.
+        let seed = DenseMatrix::from_shape_vec(vec![3], vec![2.0, 2.0, 1.0]).unwrap();
+        let mut fitted = seed.clone();
+
+        let entries = vec![TargetEntry {
+            variable_index: 0,
+            targets: vec![4.0, 2.0, 4.0],
+        }];
+
+        let constraints = build_constraints(&entries).unwrap();
+        let solver = IpfSolver::new();
+        solver.fit(&mut fitted, &constraints).unwrap();
+
+        let result = trim_rerake(&seed, &mut fitted, (0.5, 2.0), &solver, &entries, 50, 1e-6);
+        assert!(matches!(
+            result,
+            Err(RakingError::TrimInfeasible {
+                variable: 0,
+                level: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn trim_zero_budget() {
         let seed = DenseMatrix::from_shape_vec(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]).unwrap();
         let mut fitted = DenseMatrix::from_shape_vec(vec![2, 2], vec![0.1, 5.0, 5.0, 0.1]).unwrap();
 
@@ -261,9 +413,8 @@ mod tests {
             },
         ];
 
-        let constraints = build_constraints(&entries).unwrap();
         let solver = IpfSolver::new();
-        let result = trim_rerake(&seed, &mut fitted, (0.99, 1.01), &solver, &constraints, 0);
+        let result = trim_rerake(&seed, &mut fitted, (0.99, 1.01), &solver, &entries, 0, 1e-6);
         assert!(matches!(
             result,
             Err(RakingError::TrimNotConverged { cycles: 0 })

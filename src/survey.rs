@@ -64,16 +64,22 @@ impl CodedSurvey {
         }
 
         let k = variables.len();
+        if k == 0 {
+            return Err(RakingError::NoVariables);
+        }
 
         if codes.len() != n_records * k {
-            return Err(RakingError::BaseWeightLength {
+            return Err(RakingError::CodeLengthMismatch {
                 expected: n_records * k,
                 got: codes.len(),
             });
         }
 
-        // Validate labels
+        // Validate levels and labels
         for (v, var) in variables.iter().enumerate() {
+            if var.levels == 0 {
+                return Err(RakingError::ZeroLevels { variable: v });
+            }
             if let Some(ref labels) = var.labels
                 && labels.len() != var.levels
             {
@@ -109,6 +115,9 @@ impl CodedSurvey {
                 });
             }
             for (r, &w) in bw.iter().enumerate() {
+                if !w.is_finite() {
+                    return Err(RakingError::NonFiniteBaseWeight { record: r });
+                }
                 if w < 0.0 {
                     return Err(RakingError::NegativeBaseWeight {
                         record: r,
@@ -182,27 +191,36 @@ pub struct SurveyBuilder {
 }
 
 impl SurveyBuilder {
-    /// Append one unweighted record.
-    pub fn push_record(&mut self, codes: &[usize]) -> Result<&mut Self, RakingError> {
+    /// Validate one record's codes against the variable definitions.
+    fn check_codes(&self, codes: &[usize]) -> Result<(), RakingError> {
         let k = self.variables.len();
         if codes.len() != k {
-            return Err(RakingError::BaseWeightLength {
+            return Err(RakingError::CodeLengthMismatch {
                 expected: k,
                 got: codes.len(),
             });
         }
 
         for (v, &code) in codes.iter().enumerate() {
-            if code >= self.variables[v].levels {
+            let levels = self.variables[v].levels;
+            if levels == 0 {
+                return Err(RakingError::ZeroLevels { variable: v });
+            }
+            if code >= levels {
                 return Err(RakingError::InvalidCode {
                     record: self.n_records,
                     variable: v,
                     code,
-                    max: self.variables[v].levels - 1,
+                    max: levels - 1,
                 });
             }
         }
+        Ok(())
+    }
 
+    /// Append one unweighted record.
+    pub fn push_record(&mut self, codes: &[usize]) -> Result<&mut Self, RakingError> {
+        self.check_codes(codes)?;
         self.codes.extend_from_slice(codes);
 
         // If we already started tracking weights, fill 1.0 for this record
@@ -220,6 +238,11 @@ impl SurveyBuilder {
         codes: &[usize],
         base_weight: f64,
     ) -> Result<&mut Self, RakingError> {
+        if !base_weight.is_finite() {
+            return Err(RakingError::NonFiniteBaseWeight {
+                record: self.n_records,
+            });
+        }
         if base_weight < 0.0 {
             return Err(RakingError::NegativeBaseWeight {
                 record: self.n_records,
@@ -227,25 +250,7 @@ impl SurveyBuilder {
             });
         }
 
-        let k = self.variables.len();
-        if codes.len() != k {
-            return Err(RakingError::BaseWeightLength {
-                expected: k,
-                got: codes.len(),
-            });
-        }
-
-        for (v, &code) in codes.iter().enumerate() {
-            if code >= self.variables[v].levels {
-                return Err(RakingError::InvalidCode {
-                    record: self.n_records,
-                    variable: v,
-                    code,
-                    max: self.variables[v].levels - 1,
-                });
-            }
-        }
-
+        self.check_codes(codes)?;
         self.codes.extend_from_slice(codes);
 
         // Retroactively fill 1.0s for prior records if this is the first weighted push
@@ -259,7 +264,14 @@ impl SurveyBuilder {
     }
 
     /// Finalize the builder, returning a [`CodedSurvey`].
-    pub fn build(self) -> Result<CodedSurvey, RakingError> {
+    ///
+    /// Takes `&mut self` so record pushes can be chained straight into
+    /// `build()`. The builder is left empty afterwards; a second `build()`
+    /// returns [`RakingError::EmptySurvey`].
+    pub fn build(&mut self) -> Result<CodedSurvey, RakingError> {
+        if self.variables.is_empty() {
+            return Err(RakingError::NoVariables);
+        }
         if self.n_records == 0 {
             return Err(RakingError::EmptySurvey);
         }
@@ -278,10 +290,10 @@ impl SurveyBuilder {
         }
 
         Ok(CodedSurvey {
-            n_records: self.n_records,
-            variables: self.variables,
-            codes: self.codes,
-            base_weights: self.base_weights,
+            n_records: std::mem::take(&mut self.n_records),
+            variables: std::mem::take(&mut self.variables),
+            codes: std::mem::take(&mut self.codes),
+            base_weights: self.base_weights.take(),
         })
     }
 }
@@ -368,7 +380,7 @@ mod tests {
         let result = builder.push_record(&[0]);
         assert!(matches!(
             result,
-            Err(RakingError::BaseWeightLength {
+            Err(RakingError::CodeLengthMismatch {
                 expected: 2,
                 got: 1,
             })
@@ -386,10 +398,76 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_weight() {
+        let mut builder = CodedSurvey::builder(test_variables());
+        let result = builder.push_record_weighted(&[0, 0], f64::NAN);
+        assert!(matches!(
+            result,
+            Err(RakingError::NonFiniteBaseWeight { record: 0 })
+        ));
+
+        let result = CodedSurvey::from_flat_codes_weighted(
+            test_variables(),
+            vec![0, 0],
+            1,
+            vec![f64::INFINITY],
+        );
+        assert!(matches!(
+            result,
+            Err(RakingError::NonFiniteBaseWeight { record: 0 })
+        ));
+    }
+
+    #[test]
     fn empty_survey() {
-        let builder = CodedSurvey::builder(test_variables());
+        let mut builder = CodedSurvey::builder(test_variables());
         let result = builder.build();
         assert!(matches!(result, Err(RakingError::EmptySurvey)));
+    }
+
+    #[test]
+    fn zero_levels_rejected() {
+        let vars = vec![Variable {
+            name: "bad".into(),
+            levels: 0,
+            labels: None,
+        }];
+        let mut builder = CodedSurvey::builder(vars.clone());
+        let result = builder.push_record(&[0]);
+        assert!(matches!(
+            result,
+            Err(RakingError::ZeroLevels { variable: 0 })
+        ));
+
+        let result = CodedSurvey::from_flat_codes(vars, vec![0], 1);
+        assert!(matches!(
+            result,
+            Err(RakingError::ZeroLevels { variable: 0 })
+        ));
+    }
+
+    #[test]
+    fn no_variables_rejected() {
+        let result = CodedSurvey::from_flat_codes(vec![], vec![], 3);
+        assert!(matches!(result, Err(RakingError::NoVariables)));
+
+        let mut builder = CodedSurvey::builder(vec![]);
+        builder.push_record(&[]).unwrap();
+        let result = builder.build();
+        assert!(matches!(result, Err(RakingError::NoVariables)));
+    }
+
+    #[test]
+    fn builder_chained_style() {
+        let survey = CodedSurvey::builder(test_variables())
+            .push_record(&[0, 0])
+            .unwrap()
+            .push_record_weighted(&[1, 1], 2.0)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(survey.n_records(), 2);
+        assert_eq!(survey.base_weight(1), 2.0);
     }
 
     #[test]
@@ -430,7 +508,10 @@ mod tests {
     #[test]
     fn from_flat_codes_wrong_length() {
         let result = CodedSurvey::from_flat_codes(test_variables(), vec![0, 0, 1], 2);
-        assert!(matches!(result, Err(RakingError::BaseWeightLength { .. })));
+        assert!(matches!(
+            result,
+            Err(RakingError::CodeLengthMismatch { .. })
+        ));
     }
 
     #[test]

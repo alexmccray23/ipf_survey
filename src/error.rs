@@ -4,6 +4,7 @@ use ipf::IpfError;
 
 /// All errors that can occur in the `ipf_survey` crate.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RakingError {
     // -- Survey construction errors --
     /// A record's code is out of range for its variable.
@@ -13,6 +14,15 @@ pub enum RakingError {
         code: usize,
         max: usize,
     },
+
+    /// A record's code count doesn't match the number of variables.
+    CodeLengthMismatch { expected: usize, got: usize },
+
+    /// Survey has no variables.
+    NoVariables,
+
+    /// A variable has zero levels, so no record can carry a valid code for it.
+    ZeroLevels { variable: usize },
 
     /// Variable label count doesn't match level count.
     LabelMismatch {
@@ -26,6 +36,9 @@ pub enum RakingError {
 
     /// Negative base weight.
     NegativeBaseWeight { record: usize, weight: f64 },
+
+    /// Base weight is NaN or infinite.
+    NonFiniteBaseWeight { record: usize },
 
     /// No records provided.
     EmptySurvey,
@@ -44,6 +57,13 @@ pub enum RakingError {
     /// Same variable targeted twice.
     DuplicateVariable { name: String },
 
+    /// A target value is negative, NaN, or infinite.
+    InvalidTarget {
+        name: String,
+        index: usize,
+        value: f64,
+    },
+
     /// Grand totals across variables are inconsistent.
     InconsistentTotals {
         variable_a: usize,
@@ -58,9 +78,16 @@ pub enum RakingError {
     /// Weight trimming did not converge within `max_trim_cycles`.
     TrimNotConverged { cycles: usize },
 
+    /// Weight trimming cannot satisfy the targets: the mass frozen at the
+    /// bounds conflicts with the marginal target for this variable level.
+    TrimInfeasible { variable: usize, level: usize },
+
     // -- Config errors --
-    /// Invalid weight bounds (lower > upper, or negative).
+    /// Invalid weight bounds (lower > upper, negative, or NaN).
     InvalidBounds { lower: f64, upper: f64 },
+
+    /// Invalid normalization total (must be finite and positive).
+    InvalidNormalization { value: f64 },
 }
 
 impl From<IpfError> for RakingError {
@@ -81,6 +108,13 @@ impl fmt::Display for RakingError {
                 f,
                 "record {record}: variable {variable} code {code} out of range (max {max})"
             ),
+            Self::CodeLengthMismatch { expected, got } => {
+                write!(f, "record has {got} codes, expected {expected}")
+            }
+            Self::NoVariables => write!(f, "survey has no variables"),
+            Self::ZeroLevels { variable } => {
+                write!(f, "variable {variable} has zero levels")
+            }
             Self::LabelMismatch {
                 variable,
                 levels,
@@ -94,6 +128,9 @@ impl fmt::Display for RakingError {
             }
             Self::NegativeBaseWeight { record, weight } => {
                 write!(f, "record {record}: negative base weight {weight}")
+            }
+            Self::NonFiniteBaseWeight { record } => {
+                write!(f, "record {record}: base weight is NaN or infinite")
             }
             Self::EmptySurvey => write!(f, "survey has no records"),
             Self::VariableNotFound { name } => {
@@ -110,6 +147,10 @@ impl fmt::Display for RakingError {
             Self::DuplicateVariable { name } => {
                 write!(f, "duplicate targets for variable \"{name}\"")
             }
+            Self::InvalidTarget { name, index, value } => write!(
+                f,
+                "variable \"{name}\": target[{index}] = {value} is not a finite non-negative number"
+            ),
             Self::InconsistentTotals {
                 variable_a,
                 variable_b,
@@ -122,8 +163,15 @@ impl fmt::Display for RakingError {
             Self::TrimNotConverged { cycles } => {
                 write!(f, "weight trimming did not converge after {cycles} cycles")
             }
+            Self::TrimInfeasible { variable, level } => write!(
+                f,
+                "weight trimming is infeasible: bounds conflict with the target for variable {variable} level {level}; widen weight_bounds or adjust targets"
+            ),
             Self::InvalidBounds { lower, upper } => {
                 write!(f, "invalid weight bounds: [{lower}, {upper}]")
+            }
+            Self::InvalidNormalization { value } => {
+                write!(f, "invalid normalization total {value} (must be finite and positive)")
             }
         }
     }
@@ -187,6 +235,23 @@ mod tests {
                 lower: 5.0,
                 upper: 1.0,
             },
+            RakingError::CodeLengthMismatch {
+                expected: 2,
+                got: 1,
+            },
+            RakingError::NoVariables,
+            RakingError::ZeroLevels { variable: 0 },
+            RakingError::NonFiniteBaseWeight { record: 3 },
+            RakingError::InvalidTarget {
+                name: "age".into(),
+                index: 1,
+                value: f64::NAN,
+            },
+            RakingError::TrimInfeasible {
+                variable: 0,
+                level: 2,
+            },
+            RakingError::InvalidNormalization { value: -1.0 },
         ];
 
         for v in &variants {

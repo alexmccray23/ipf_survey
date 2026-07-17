@@ -6,5 +6,12 @@ license = "MIT"
 description = "Survey raking utility that extends the ipf crate."
 readme = "README.md"
 
+[features]
+default = []
+# Parallel IPF inner loop via the ipf crate's rayon support.
+rayon = ["ipf/rayon"]
+# Per-iteration residual history and NaN/Inf scanning in the IPF solver.
+diagnostics = ["ipf/diagnostics"]
+
 [dependencies]
 ipf = "0.2"
