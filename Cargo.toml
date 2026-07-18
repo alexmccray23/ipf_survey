@@ -6,6 +6,7 @@ rust-version = "1.88"
 license = "MIT"
 description = "Survey raking utility that extends the ipf crate."
 readme = "README.md"
+repository = "https://github.com/alexmccray23/ipf_survey"
 keywords = ["survey", "raking", "weighting", "ipf", "statistics"]
 categories = ["science", "mathematics", "algorithms"]
 
